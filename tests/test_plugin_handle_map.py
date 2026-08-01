@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Offline model for the four-way Widevine client handle table."""
+"""Offline model for the bounded LRU Widevine client handle table."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import unittest
 
 
 CAPACITY = 256
-WAYS = 4
+WAYS = 8
 BUCKETS = CAPACITY // WAYS
+ROOT = Path(__file__).resolve().parents[1]
+HOOK_SOURCE = (ROOT / "binder_hook_builder.cpp").read_text(encoding="utf-8")
 
 
 @dataclass
@@ -29,6 +32,7 @@ class PluginMap:
         self.collisions = 0
         self.releases = 0
         self.release_misses = 0
+        self.evictions = 0
 
     @staticmethod
     def bucket(binder_file: int, tgid: int, handle: int) -> int:
@@ -49,22 +53,41 @@ class PluginMap:
             return True
         empty = next((s for s in ways if s.binder_file == 0), None)
         if empty is None:
+            empty = min(ways, key=lambda s: s.event_id)
             self.collisions += 1
-            return False
+            self.evictions += 1
+            # Reclamation replaces one active entry, so active remains
+            # bounded at capacity instead of growing or rejecting the new
+            # Widevine registration.
+            active_delta = 0
+        else:
+            active_delta = 1
         empty.binder_file = binder_file
         empty.tgid = tgid
         empty.handle = handle
         empty.event_id = event
         self.inserts += 1
-        self.active += 1
+        self.active += active_delta
         return True
 
-    def lookup(self, binder_file: int, tgid: int, handle: int) -> bool:
+    def lookup(
+        self,
+        binder_file: int,
+        tgid: int,
+        handle: int,
+        event: int | None = None,
+    ) -> bool:
         base = self.bucket(binder_file, tgid, handle)
-        return any(
-            (s.binder_file, s.tgid, s.handle) == (binder_file, tgid, handle)
-            for s in self.slots[base : base + WAYS]
-        )
+        for slot in self.slots[base : base + WAYS]:
+            if (slot.binder_file, slot.tgid, slot.handle) == (
+                binder_file,
+                tgid,
+                handle,
+            ):
+                if event is not None:
+                    slot.event_id = event
+                return True
+        return False
 
     def release(self, binder_file: int, tgid: int, handle: int) -> bool:
         base = self.bucket(binder_file, tgid, handle)
@@ -83,6 +106,15 @@ class PluginMap:
 
 
 class PluginHandleMapTest(unittest.TestCase):
+    def test_emitter_uses_eight_way_addressing_for_all_plugin_operations(self) -> None:
+        self.assertEqual(
+            HOOK_SOURCE.count("a->lsl(x15, x15, kPluginBucketWayShift)"),
+            3,
+        )
+        self.assertIn("kPluginBucketWays == 8", HOOK_SOURCE)
+        self.assertIn("least-recently-used occupied slot", HOOK_SOURCE)
+        self.assertIn("recovered collision/eviction events", HOOK_SOURCE)
+
     def test_register_lookup_release(self) -> None:
         model = PluginMap()
         self.assertTrue(model.register(0xFFFF00001000, 200, 5, 17))
@@ -99,26 +131,50 @@ class PluginHandleMapTest(unittest.TestCase):
         self.assertTrue(model.register(0x1000, 10, 7, 2))
         self.assertEqual((model.inserts, model.reuses, model.active), (1, 1, 1))
 
-    def test_four_way_collision(self) -> None:
-        model = PluginMap()
-        # Keep the XOR bucket constant while varying all key components.
+    def same_bucket_keys(self, count: int) -> list[tuple[int, int, int]]:
         keys = []
-        for i in range(5):
+        for i in range(count):
             binder_file = 0x1000 + (i << 12)
             tgid = 100 + i
             handle = ((binder_file >> 6) ^ tgid) & (BUCKETS - 1)
             keys.append((binder_file, tgid, handle))
         target_bucket = PluginMap.bucket(*keys[0])
-        # Adjust handles so every key lands in the first key's bucket.
-        keys = [
+        return [
             (bf, tg, h ^ ((PluginMap.bucket(bf, tg, h) // WAYS) ^
                           (target_bucket // WAYS)))
             for bf, tg, h in keys
         ]
-        for index, key in enumerate(keys[:4]):
+
+    def test_eight_way_collision_reclaims_lru_instead_of_rejecting(self) -> None:
+        model = PluginMap()
+        # Keep the XOR bucket constant while varying all key components.
+        keys = self.same_bucket_keys(WAYS + 1)
+        for index, key in enumerate(keys[:WAYS]):
             self.assertTrue(model.register(*key, index + 1))
-        self.assertFalse(model.register(*keys[4], 5))
-        self.assertEqual(model.collisions, 1)
+        self.assertTrue(model.register(*keys[WAYS], WAYS + 1))
+        self.assertFalse(model.lookup(*keys[0]))
+        self.assertTrue(model.lookup(*keys[WAYS]))
+        self.assertEqual((model.collisions, model.evictions), (1, 1))
+        self.assertEqual(model.active, WAYS)
+
+    def test_lookup_refresh_protects_active_entry_from_stale_reclaim(self) -> None:
+        model = PluginMap()
+        keys = self.same_bucket_keys(WAYS + 1)
+        for index, key in enumerate(keys[:WAYS]):
+            self.assertTrue(model.register(*key, index + 1))
+        self.assertTrue(model.lookup(*keys[0], event=1000))
+        self.assertTrue(model.register(*keys[WAYS], 1001))
+        self.assertTrue(model.lookup(*keys[0]))
+        self.assertFalse(model.lookup(*keys[1]))
+
+    def test_repeated_client_exit_without_release_never_rejects_new_plugin(self) -> None:
+        model = PluginMap()
+        keys = self.same_bucket_keys(128)
+        for event, key in enumerate(keys, start=1):
+            self.assertTrue(model.register(*key, event))
+            self.assertTrue(model.lookup(*key, event=event))
+        self.assertEqual(model.active, WAYS)
+        self.assertEqual(model.evictions, len(keys) - WAYS)
 
     def test_release_miss(self) -> None:
         model = PluginMap()

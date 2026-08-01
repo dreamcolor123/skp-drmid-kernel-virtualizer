@@ -114,7 +114,7 @@ void print_parser_snapshot(const char* label,
     printf("[drmid612] %s metadata ok/fault=%" PRIu64 "/%" PRIu64
            " events=%" PRIu64
            " pending push/pop/terminal=%" PRIu64 "/%" PRIu64
-           "/%" PRIu64 " miss/overflow/collision/oneway=%" PRIu64
+           "/%" PRIu64 " miss/overflow/reclaim/oneway=%" PRIu64
            "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
            " lock-state/drops=%" PRIu64 "/%" PRIu64 "\n",
            label,
@@ -228,7 +228,7 @@ void print_parser_snapshot(const char* label,
            s.config_slots[1].config_generation);
     printf("[drmid612] %s plugin create-request/reply-ok/fault=%" PRIu64
            "/%" PRIu64 "/%" PRIu64
-           " map insert/reuse/collision/active=%" PRIu64 "/%" PRIu64
+           " map insert/reuse/reclaim/active=%" PRIu64 "/%" PRIu64
            "/%" PRIu64 "/%" PRIu64
            " lookup/hit/miss=%" PRIu64 "/%" PRIu64 "/%" PRIu64
            " release/miss=%" PRIu64 "/%" PRIu64
@@ -815,8 +815,11 @@ KModErr run_readonly_parser_probe(const char* root_key,
         close(binder_fd);
         return err;
     }
-    printf("[drmid612] Binder parser hook installed context=%p\n",
-           reinterpret_cast<void*>(session.context_kaddr));
+    printf("[drmid612] Binder parser hook installed context=%p abi=%" PRIu64
+           " size=%zu\n",
+           reinterpret_cast<void*>(session.context_kaddr),
+           drmid::kCounterContextAbi,
+           sizeof(drmid::KernelCounterContext));
 
     drmid::KernelCounterContext before{};
     drmid::KernelCounterContext after{};
@@ -1163,7 +1166,7 @@ void module_on_uninstall(const char*, const char* module_private_dir) {
 }
 
 SKROOT_MODULE_NAME("虚拟化DRM ID")
-SKROOT_MODULE_VERSION("1.1.0")
+SKROOT_MODULE_VERSION("1.1.2")
 SKROOT_MODULE_DESC("面向 Android 14+ / Linux 6.6与6.12 的多应用内核级 DRM ID 虚拟化，支持 WebUI 实时配置")
 SKROOT_MODULE_AUTHOR("斓梦语")
 SKROOT_MODULE_ID32("drmidKern612Probe20260728Alpha01")

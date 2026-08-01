@@ -19,6 +19,9 @@ constexpr uint64_t kMaxParsedStreamBytes = 64 * 1024;
 constexpr uint64_t kMaxParsedCommands = 128;
 constexpr uint64_t kPendingBucketCount =
     kPendingSlotCapacity / kPendingBucketWays;
+static_assert((kPendingBucketWays & (kPendingBucketWays - 1)) == 0);
+static_assert(kPendingBucketWays == 8);
+constexpr uint32_t kPendingBucketWayShift = 3;
 constexpr uint32_t kTransactionScratchOffset = 16;
 constexpr uint32_t kParcelPrefixScratchOffset = 80;
 constexpr uint32_t kParcelPrefixMaxBytes = 256;
@@ -57,7 +60,10 @@ static_assert((kTransactionEventCapacity &
 static_assert((kPendingBucketCount & (kPendingBucketCount - 1)) == 0);
 constexpr uint64_t kPluginBucketCount =
     kPluginSlotCapacity / kPluginBucketWays;
+static_assert((kPluginBucketWays & (kPluginBucketWays - 1)) == 0);
 static_assert((kPluginBucketCount & (kPluginBucketCount - 1)) == 0);
+static_assert(kPluginBucketWays == 8);
+constexpr uint32_t kPluginBucketWayShift = 3;
 constexpr uint32_t kMapLockTryCount = 8;
 
 // Stack-local layout used by the generated handler. All fields are 64-bit;
@@ -298,8 +304,8 @@ void emit_plugin_map_register(Assembler* a,
                               uint64_t context_kaddr,
                               const TaskIdentityOffsets& task_offsets) {
     const Label found = a->newLabel();
-    const Label insert = a->newLabel();
-    const Label collision = a->newLabel();
+    const Label use_empty = a->newLabel();
+    const Label write = a->newLabel();
     const Label release = a->newLabel();
     const Label done = a->newLabel();
 
@@ -311,7 +317,7 @@ void emit_plugin_map_register(Assembler* a,
     a->eor(x15, x15, x13);
     a->eor(x15, x15, x14);
     a->and_(x15, x15, kPluginBucketCount - 1);
-    a->lsl(x15, x15, 2);
+    a->lsl(x15, x15, kPluginBucketWayShift);
     aarch64_asm_mov_x(a, x9, sizeof(BinderPluginSlot));
     a->mul(x15, x15, x9);
     aarch64_asm_mov_x(
@@ -320,20 +326,32 @@ void emit_plugin_map_register(Assembler* a,
         context_kaddr + offsetof(KernelCounterContext, plugins));
     a->add(x16, x16, x15);
     a->mov(x11, xzr); // first empty slot
+    a->mov(x10, xzr); // least-recently-used occupied slot
+    aarch64_asm_mov_x(a, x17, UINT64_MAX); // oldest event id
 
     for (size_t way = 0; way < kPluginBucketWays; ++way) {
         const Label next = a->newLabel();
         const Label remember_empty = a->newLabel();
+        const Label remember_oldest = a->newLabel();
         a->ldr(x9, ptr(x16, offsetof(BinderPluginSlot, binder_file)));
         a->cbz(x9, remember_empty);
         a->cmp(x9, x12);
-        a->b(CondCode::kNE, next);
+        const Label consider_oldest = a->newLabel();
+        a->b(CondCode::kNE, consider_oldest);
         a->ldr(w9, ptr(x16, offsetof(BinderPluginSlot, owner_tgid)));
         a->cmp(w9, w13);
-        a->b(CondCode::kNE, next);
+        a->b(CondCode::kNE, consider_oldest);
         a->ldr(w9, ptr(x16, offsetof(BinderPluginSlot, handle)));
         a->cmp(w9, w14);
         a->b(CondCode::kEQ, found);
+        a->bind(consider_oldest);
+        a->ldr(x9, ptr(x16, offsetof(BinderPluginSlot, registered_event_id)));
+        a->cbz(x10, remember_oldest);
+        a->cmp(x9, x17);
+        a->b(CondCode::kHS, next);
+        a->bind(remember_oldest);
+        a->mov(x10, x16);
+        a->mov(x17, x9);
         a->b(next);
         a->bind(remember_empty);
         a->cbnz(x11, next);
@@ -343,9 +361,21 @@ void emit_plugin_map_register(Assembler* a,
             a->add(x16, x16, sizeof(BinderPluginSlot));
         }
     }
-    a->cbz(x11, collision);
+    a->cbnz(x11, use_empty);
+    // A client can be killed without sending BC_RELEASE. Never let those
+    // stale keys make a later Widevine registration fail: replace the least
+    // recently used entry in this bounded bucket. plugin_map_collisions now
+    // counts recovered collision/eviction events; active stays at capacity.
+    a->mov(x16, x10);
+    aarch64_asm_mov_w(a, w15, 0); // replacement, not a new active slot
+    emit_counter_increment(
+        a, context_kaddr, offsetof(KernelCounterContext, plugin_map_collisions));
+    a->b(write);
+
+    a->bind(use_empty);
     a->mov(x16, x11);
-    a->b(insert);
+    aarch64_asm_mov_w(a, w15, 1); // newly active slot
+    a->b(write);
 
     a->bind(found);
     a->str(x21, ptr(x16, offsetof(BinderPluginSlot, registered_event_id)));
@@ -353,7 +383,7 @@ void emit_plugin_map_register(Assembler* a,
         a, context_kaddr, offsetof(KernelCounterContext, plugin_map_reuses));
     a->b(release);
 
-    a->bind(insert);
+    a->bind(write);
     a->str(x21, ptr(x16, offsetof(BinderPluginSlot, registered_event_id)));
     a->str(w13, ptr(x16, offsetof(BinderPluginSlot, owner_tgid)));
     a->str(w14, ptr(x16, offsetof(BinderPluginSlot, handle)));
@@ -364,13 +394,10 @@ void emit_plugin_map_register(Assembler* a,
     a->stlr(x12, ptr(x16, offsetof(BinderPluginSlot, binder_file)));
     emit_counter_increment(
         a, context_kaddr, offsetof(KernelCounterContext, plugin_map_inserts));
+    a->cbz(w15, release);
     emit_counter_increment(
         a, context_kaddr, offsetof(KernelCounterContext, plugin_map_active));
     a->b(release);
-
-    a->bind(collision);
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, plugin_map_collisions));
     a->bind(release);
     emit_plugin_lock_release(a, context_kaddr);
     a->bind(done);
@@ -400,7 +427,7 @@ void emit_plugin_map_classify_request(
     a->eor(x15, x15, x13);
     a->eor(x15, x15, x14);
     a->and_(x15, x15, kPluginBucketCount - 1);
-    a->lsl(x15, x15, 2);
+    a->lsl(x15, x15, kPluginBucketWayShift);
     aarch64_asm_mov_x(a, x9, sizeof(BinderPluginSlot));
     a->mul(x15, x15, x9);
     aarch64_asm_mov_x(
@@ -427,6 +454,13 @@ void emit_plugin_map_classify_request(
     a->b(miss);
 
     a->bind(found);
+    // Refresh the entry age only after an exact file/tgid/handle hit. This
+    // keeps an actively used plugin ahead of abandoned process entries when
+    // a later registration needs bounded LRU reclamation.
+    aarch64_asm_mov_x(
+        a, x9, context_kaddr + offsetof(KernelCounterContext, event_write_index));
+    a->ldr(x10, ptr(x9));
+    a->str(x10, ptr(x16, offsetof(BinderPluginSlot, registered_event_id)));
     a->ldr(w11, ptr(x23, kParcelFlagsScratchOffset));
     a->orr(w11, w11, kParcelFlagWidevinePluginMatched);
     a->str(w11, ptr(x23, kParcelFlagsScratchOffset));
@@ -457,7 +491,7 @@ void emit_plugin_map_release(Assembler* a,
     a->eor(x15, x15, x13);
     a->eor(x15, x15, x14);
     a->and_(x15, x15, kPluginBucketCount - 1);
-    a->lsl(x15, x15, 2);
+    a->lsl(x15, x15, kPluginBucketWayShift);
     aarch64_asm_mov_x(a, x9, sizeof(BinderPluginSlot));
     a->mul(x15, x15, x9);
     aarch64_asm_mov_x(
@@ -505,8 +539,10 @@ void emit_pending_push(Assembler* a,
                        const TaskIdentityOffsets& task_offsets) {
     const Label ignored_oneway = a->newLabel();
     const Label found = a->newLabel();
+    const Label reclaim_identity = a->newLabel();
+    const Label use_empty = a->newLabel();
+    const Label claim = a->newLabel();
     const Label claimed = a->newLabel();
-    const Label collision = a->newLabel();
     const Label overflow = a->newLabel();
     const Label release = a->newLabel();
     const Label done = a->newLabel();
@@ -516,10 +552,10 @@ void emit_pending_push(Assembler* a,
 
     emit_pending_lock_acquire(a, context_kaddr, done);
 
-    // Four-way bucket: ((task >> 6) & (bucket_count - 1)) * 4.
+    // Eight-way bucket: ((task >> 6) & (bucket_count - 1)) * 8.
     a->lsr(x13, x27, 6);
     a->and_(x13, x13, kPendingBucketCount - 1);
-    a->lsl(x13, x13, 2);
+    a->lsl(x13, x13, kPendingBucketWayShift);
     aarch64_asm_mov_x(a, x12, sizeof(BinderPendingSlot));
     a->mul(x13, x13, x12);
     aarch64_asm_mov_x(
@@ -528,14 +564,46 @@ void emit_pending_push(Assembler* a,
         context_kaddr + offsetof(KernelCounterContext, pending));
     a->add(x15, x15, x13);
     a->mov(x14, xzr); // first empty slot
+    a->mov(x10, xzr); // least-recently-used occupied slot
+    aarch64_asm_mov_x(a, x17, UINT64_MAX); // oldest request event id
 
     for (size_t way = 0; way < kPendingBucketWays; ++way) {
         const Label next = a->newLabel();
         const Label remember_empty = a->newLabel();
+        const Label consider_oldest = a->newLabel();
+        const Label remember_oldest = a->newLabel();
         a->ldr(x16, ptr(x15));
-        a->cmp(x16, x27);
-        a->b(CondCode::kEQ, found);
         a->cbz(x16, remember_empty);
+        a->cmp(x16, x27);
+        a->b(CondCode::kNE, consider_oldest);
+        // A freed task_struct address can be reused by a later application
+        // thread. Require all three identity fields before appending to an
+        // existing stack; otherwise reclaim this stale slot immediately.
+        a->ldr(w12, ptr(x15, offsetof(BinderPendingSlot, pid)));
+        a->ldr(w11, ptr(x27, task_offsets.pid));
+        a->cmp(w12, w11);
+        a->b(CondCode::kNE, reclaim_identity);
+        a->ldr(w12, ptr(x15, offsetof(BinderPendingSlot, tgid)));
+        a->ldr(w11, ptr(x27, task_offsets.tgid));
+        a->cmp(w12, w11);
+        a->b(CondCode::kEQ, found);
+        a->b(reclaim_identity);
+        a->bind(consider_oldest);
+        a->mov(x9, xzr);
+        a->ldr(w11, ptr(x15, offsetof(BinderPendingSlot, depth)));
+        a->cbz(w11, remember_oldest);
+        a->sub(w11, w11, 1);
+        aarch64_asm_mov_x(a, x12, sizeof(BinderPendingFrame));
+        a->mul(x12, x11, x12);
+        a->add(x12, x12, offsetof(BinderPendingSlot, frames));
+        a->add(x12, x15, x12);
+        a->ldr(x9, ptr(x12, offsetof(BinderPendingFrame, request_event_id)));
+        a->cbz(x10, remember_oldest);
+        a->cmp(x9, x17);
+        a->b(CondCode::kHS, next);
+        a->bind(remember_oldest);
+        a->mov(x10, x15);
+        a->mov(x17, x9);
         a->b(next);
         a->bind(remember_empty);
         a->cbnz(x14, next);
@@ -545,8 +613,23 @@ void emit_pending_push(Assembler* a,
             a->add(x15, x15, sizeof(BinderPendingSlot));
         }
     }
-    a->cbz(x14, collision);
+    a->cbnz(x14, use_empty);
+    // A killed client may leave a synchronous frame without a matching reply.
+    // Reclaim the oldest entry in the bounded bucket instead of rejecting all
+    // future correlations that hash to the same full bucket.
+    a->mov(x15, x10);
+    emit_counter_increment(
+        a, context_kaddr, offsetof(KernelCounterContext, pending_collisions));
+    a->b(claim);
+
+    a->bind(reclaim_identity);
+    emit_counter_increment(
+        a, context_kaddr, offsetof(KernelCounterContext, pending_collisions));
+    a->b(claim);
+
+    a->bind(use_empty);
     a->mov(x15, x14);
+    a->bind(claim);
     a->str(x27, ptr(x15, offsetof(BinderPendingSlot, task_kaddr)));
     a->ldr(w11, ptr(x27, task_offsets.pid));
     a->str(w11, ptr(x15, offsetof(BinderPendingSlot, pid)));
@@ -582,10 +665,6 @@ void emit_pending_push(Assembler* a,
         a, context_kaddr, offsetof(KernelCounterContext, pending_pushes));
     a->b(release);
 
-    a->bind(collision);
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, pending_collisions));
-    a->b(release);
     a->bind(overflow);
     emit_counter_increment(
         a, context_kaddr, offsetof(KernelCounterContext, pending_overflows));
@@ -617,7 +696,7 @@ void emit_pending_pop(Assembler* a,
     emit_pending_lock_acquire(a, context_kaddr, done);
     a->lsr(x13, x27, 6);
     a->and_(x13, x13, kPendingBucketCount - 1);
-    a->lsl(x13, x13, 2);
+    a->lsl(x13, x13, kPendingBucketWayShift);
     aarch64_asm_mov_x(a, x12, sizeof(BinderPendingSlot));
     a->mul(x13, x13, x12);
     aarch64_asm_mov_x(

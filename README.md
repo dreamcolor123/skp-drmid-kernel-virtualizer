@@ -2,7 +2,7 @@
 
 面向 SKRoot Pro 的 Android 14+ / ARM64 纯内核 DRM ID 虚拟化模块。
 
-当前稳定版：**1.1.0**
+当前稳定版：**1.1.2**
 
 ## 支持范围
 
@@ -27,6 +27,8 @@ Linux 6.6 使用严格的内核版本、Binder backend、live symbol 地址和�
 - WebUI 应用选择器、当前语言应用名称及图标
 - WebUI 离开前台后关闭会话和监听端口
 - 有界 Binder correlation 锁；竞争时丢弃本次元数据并保持原调用继续
+- pending/plugin 固定表使用八路有界 LRU 回收，应用反复结束和重新启动时不会因
+  遗留关联项耗尽桶位
 
 ## 目录
 
@@ -84,11 +86,20 @@ parser、配置、WebUI、锁和 Linux 6.6 profile Fixture 可直接运行。
 
 ## 发布冻结信息
 
-- 版本：1.1.0
-- Kernel Context ABI：15 / 97,704 bytes
+- 版本：1.1.2
+- Kernel Context ABI：16 / 97,704 bytes
 - Control IPC：v2
 - TargetConfig：v2
 - Linux 6.6.89 backend：`classic_binder-6.6`
 - Linux 6.6 prologue：`d503233f d10343ff a9077bfd a9086ffc`
 
 作者：斓梦语
+
+## 1.1.2 更新
+
+- pending 与 Widevine plugin handle 表由四路调整为八路，总容量仍固定为 256 项；
+- 桶满时回收最旧关联项，避免应用进程退出后未完成的 Binder 生命周期长期占位；
+- pending 命中同时校验 task pointer、PID 与 TGID，处理 task address 复用；
+- plugin lookup 刷新 LRU 年龄，优先保留仍活跃的 handle；
+- 所有查找与回收均严格限制在最多 8 项，无动态分配；
+- 日志将相关 `collision` 语义明确为已恢复的 `reclaim`，并输出 ABI 与 Context 大小。

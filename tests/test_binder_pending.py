@@ -5,14 +5,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import ctypes
+from pathlib import Path
 import unittest
 
 
 PENDING_SLOTS = 256
-BUCKET_WAYS = 4
+BUCKET_WAYS = 8
 BUCKETS = PENDING_SLOTS // BUCKET_WAYS
 MAX_DEPTH = 4
 TF_ONE_WAY = 0x01
+ROOT = Path(__file__).resolve().parents[1]
+HOOK_SOURCE = (ROOT / "binder_hook_builder.cpp").read_text(encoding="utf-8")
 
 
 class EventLayout(ctypes.Structure):
@@ -111,12 +114,40 @@ class PendingModel:
             return False
         base = self.bucket(task)
         ways = self.slots[base : base + BUCKET_WAYS]
-        slot = next((entry for entry in ways if entry.task == task), None)
+        slot = next(
+            (
+                entry
+                for entry in ways
+                if (entry.task, entry.pid, entry.tgid) == (task, pid, tgid)
+            ),
+            None,
+        )
+        if slot is None:
+            # A task_struct address can be reused after an application exits.
+            # Reclaim the stale identity instead of appending to its stack.
+            slot = next(
+                (
+                    entry
+                    for entry in ways
+                    if entry.task == task and (entry.pid, entry.tgid) != (pid, tgid)
+                ),
+                None,
+            )
+            if slot is not None:
+                self.collisions += 1
+                slot.frames.clear()
+                slot.task, slot.pid, slot.tgid = task, pid, tgid
         if slot is None:
             slot = next((entry for entry in ways if entry.task == 0), None)
             if slot is None:
                 self.collisions += 1
-                return False
+                slot = min(
+                    ways,
+                    key=lambda entry: (
+                        entry.frames[-1].event_id if entry.frames else 0
+                    ),
+                )
+                slot.frames.clear()
             slot.task, slot.pid, slot.tgid = task, pid, tgid
         if len(slot.frames) >= MAX_DEPTH:
             self.overflows += 1
@@ -142,6 +173,15 @@ class PendingModel:
 
 
 class BinderPendingTest(unittest.TestCase):
+    def test_emitter_uses_eight_way_addressing_for_push_and_pop(self) -> None:
+        self.assertEqual(
+            HOOK_SOURCE.count("a->lsl(x13, x13, kPendingBucketWayShift)"),
+            2,
+        )
+        self.assertIn("kPendingBucketWays == 8", HOOK_SOURCE)
+        self.assertIn("task_struct address can be reused", HOOK_SOURCE)
+        self.assertIn("Reclaim the oldest entry in the bounded bucket", HOOK_SOURCE)
+
     def test_layout_matches_kernel_abi(self) -> None:
         self.assertEqual(ctypes.sizeof(EventLayout), 160)
         self.assertEqual(EventLayout.correlated_request_id.offset, 72)
@@ -181,14 +221,52 @@ class BinderPendingTest(unittest.TestCase):
         self.assertFalse(model.push(0x1000, 1, 1, Frame(1, 0, 0, TF_ONE_WAY, 0)))
         self.assertEqual((model.oneway, model.pushes), (1, 0))
 
-    def test_four_way_collision(self) -> None:
+    def test_eight_way_collision_reclaims_oldest_instead_of_rejecting(self) -> None:
         model = PendingModel()
         # These task values share the same six-bit bucket after >> 6.
-        tasks = [0x1000 + index * (BUCKETS << 6) for index in range(5)]
-        for event_id, task in enumerate(tasks[:4], start=1):
+        tasks = [
+            0x1000 + index * (BUCKETS << 6)
+            for index in range(BUCKET_WAYS + 1)
+        ]
+        for event_id, task in enumerate(tasks[:BUCKET_WAYS], start=1):
             self.assertTrue(model.push(task, event_id, event_id, Frame(event_id, 0, 0, 0, 0)))
-        self.assertFalse(model.push(tasks[4], 5, 5, Frame(5, 0, 0, 0, 0)))
+        self.assertTrue(
+            model.push(
+                tasks[BUCKET_WAYS],
+                99,
+                99,
+                Frame(99, 0, 0, 0, 0),
+            )
+        )
         self.assertEqual(model.collisions, 1)
+        self.assertEqual(model.pop(tasks[0]), 0)
+        self.assertEqual(model.pop(tasks[BUCKET_WAYS]), 99)
+
+    def test_task_pointer_reuse_reclaims_stale_identity(self) -> None:
+        model = PendingModel()
+        task = 0xFFFF_0000_5000
+        self.assertTrue(model.push(task, 10, 10, Frame(1, 0, 0, 0, 0)))
+        self.assertTrue(model.push(task, 20, 20, Frame(2, 0, 0, 0, 0)))
+        self.assertEqual(model.pop(task), 2)
+        self.assertEqual(model.collisions, 1)
+
+    def test_repeated_killed_clients_do_not_poison_bucket(self) -> None:
+        model = PendingModel()
+        tasks = [
+            0x2000 + index * (BUCKETS << 6)
+            for index in range(128)
+        ]
+        for event_id, task in enumerate(tasks, start=1):
+            self.assertTrue(
+                model.push(
+                    task,
+                    event_id,
+                    event_id,
+                    Frame(event_id, 0, 0, 0, 0),
+                )
+            )
+        self.assertEqual(model.pop(tasks[-1]), len(tasks))
+        self.assertEqual(model.collisions, len(tasks) - BUCKET_WAYS)
 
     def test_miss(self) -> None:
         model = PendingModel()

@@ -7,7 +7,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SDK_STATIC = ROOT.parent / "kernel_module_kit" / "lib" / "libkernel_module_kit_static.a"
-EXPECTED_VERSION = "1.1.0"
+EXPECTED_VERSION = "1.1.2"
 EXPECTED_DISPLAY_NAME = "虚拟化DRM ID"
 EXPECTED_AUTHOR = "斓梦语"
 EXPECTED_SDK_SHA256 = "9144ddc36c7ebe2bd524bc38d279c82c14d0f162cc195fcbe98f19882eab71d2"
@@ -40,6 +40,12 @@ KERNEL66_RC1_ZIP = ROOT / "dist" / (
 )
 KERNEL66_RELEASE_ZIP = ROOT / "dist" / (
     "module_drmid_kernel_virtualizer-1.1.0-arm64-run-once.zip"
+)
+RESTART_RECLAIM_RC1_ZIP = ROOT / "dist" / (
+    "module_drmid_kernel_virtualizer-1.1.1-rc1-arm64-run-once.zip"
+)
+RELEASE_112_ZIP = ROOT / "dist" / (
+    "module_drmid_kernel_virtualizer-1.1.2-arm64-run-once.zip"
 )
 NATIVECHECK_NONINTERFERENCE_MARKERS = (
     b"persist.sys.spoof",
@@ -125,6 +131,7 @@ class ReleaseHardeningTest(unittest.TestCase):
             RC21_ZIP, RC22_ZIP, RC23_ZIP, RC24_ZIP, RC25_ZIP,
             RC26_ZIP, RC27_ZIP, RELEASE_ZIP,
             KERNEL66_RC1_ZIP, KERNEL66_RELEASE_ZIP,
+            RESTART_RECLAIM_RC1_ZIP, RELEASE_112_ZIP,
         ) if candidate.is_file())
         if not candidates:
             self.skipTest("historical release ZIPs are not part of the source repository")
@@ -199,6 +206,28 @@ class ReleaseHardeningTest(unittest.TestCase):
             "hook_lock_executable_source",
             "platform_register_uses",
             're.findall(r"\\b[wx]18\\b"',
+        ):
+            self.assertIn(marker, source)
+
+    def test_packager_guards_binder_map_restart_reclamation(self):
+        source = (ROOT / "package.py").read_text(encoding="utf-8")
+        for marker in (
+            "kPendingBucketWays = 8",
+            "kPendingBucketWayShift = 3",
+            "task_struct address can be reused",
+            "Reclaim the oldest entry in the bounded bucket",
+            "kPluginBucketWays = 8",
+            "kPluginBucketWayShift = 3",
+            "least-recently-used occupied slot",
+            "recovered collision/eviction events",
+        ):
+            self.assertIn(marker, source)
+        for marker in (
+            "required_reclaim_diagnostics",
+            "Binder map reclaim diagnostics guard failed",
+            "miss/overflow/reclaim/oneway=",
+            "map insert/reuse/reclaim/active=",
+            "Binder parser hook installed context=%p abi=%",
         ):
             self.assertIn(marker, source)
 

@@ -17,7 +17,7 @@ WEBROOT = ROOT / "webroot"
 DAEMON = ROOT / "libs" / "arm64-v8a" / "drmid_probe_runner"
 LABEL_HELPER = ROOT / "label_helper" / "drmid_label_helper.jar"
 DIST = ROOT / "dist"
-VERSION = "1.1.0"
+VERSION = "1.1.2"
 DISPLAY_NAME = "虚拟化DRM ID"
 AUTHOR = "斓梦语"
 ZIP = DIST / f"module_drmid_kernel_virtualizer-{VERSION}-arm64-run-once.zip"
@@ -246,7 +246,15 @@ def verify_release_inputs() -> None:
         "pending_lock_drops",
         "plugin_lock_state",
         "plugin_lock_drops",
-        "kCounterContextAbi = 15",
+        "kCounterContextAbi = 16",
+        "kPendingBucketWays = 8",
+        "kPendingBucketWayShift = 3",
+        "task_struct address can be reused",
+        "Reclaim the oldest entry in the bounded bucket",
+        "kPluginBucketWays = 8",
+        "kPluginBucketWayShift = 3",
+        "least-recently-used occupied slot",
+        "recovered collision/eviction events",
     )
     hook_lock_text = hook_lock_source + context_source
     missing_hook_lock = [
@@ -268,6 +276,21 @@ def verify_release_inputs() -> None:
             "Binder lock hardening guard failed: "
             f"missing={missing_hook_lock} forbidden={present_hook_lock} "
             f"platform_registers={platform_register_uses}"
+        )
+
+    required_reclaim_diagnostics = (
+        "miss/overflow/reclaim/oneway=",
+        "map insert/reuse/reclaim/active=",
+        "Binder parser hook installed context=%p abi=%",
+    )
+    missing_reclaim_diagnostics = [
+        marker for marker in required_reclaim_diagnostics
+        if marker not in startup_main
+    ]
+    if missing_reclaim_diagnostics:
+        raise SystemExit(
+            "Binder map reclaim diagnostics guard failed: "
+            f"missing={missing_reclaim_diagnostics}"
         )
 
     resolver_source = (ROOT / "binder_ioctl_resolver.cpp").read_text(

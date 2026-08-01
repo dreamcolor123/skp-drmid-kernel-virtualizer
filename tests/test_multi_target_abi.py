@@ -25,7 +25,7 @@ def bounded_match(targets: list[int], euid: int) -> tuple[bool, int]:
 class MultiTargetAbiTest(unittest.TestCase):
     def test_context_abi_and_layout_are_explicit(self) -> None:
         for marker in (
-            "kCounterContextAbi = 15",
+            "kCounterContextAbi = 16",
             "kRuntimeTargetLimit = 32",
             "sizeof(RuntimeConfigSlot) == 232",
             "offsetof(RuntimeConfigSlot, target_euids) == 40",

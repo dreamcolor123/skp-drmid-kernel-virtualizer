@@ -6,14 +6,14 @@
 namespace drmid {
 
 constexpr uint64_t kCounterContextMagic = 0x44524d4944363132ULL; // "DRMID612"
-constexpr uint64_t kCounterContextAbi = 15;
+constexpr uint64_t kCounterContextAbi = 16;
 constexpr size_t kRuntimeTargetLimit = 32;
 constexpr size_t kTransactionEventCapacity = 256;
 constexpr size_t kPendingSlotCapacity = 256;
-constexpr size_t kPendingBucketWays = 4;
+constexpr size_t kPendingBucketWays = 8;
 constexpr size_t kPendingDepth = 4;
 constexpr size_t kPluginSlotCapacity = 256;
-constexpr size_t kPluginBucketWays = 4;
+constexpr size_t kPluginBucketWays = 8;
 
 enum class BinderEventKind : uint32_t {
     kUnknown = 0,
@@ -94,9 +94,11 @@ struct alignas(8) BinderPendingFrame {
     uint32_t reserved;
 };
 
-// Four-way bucketed table keyed by current task pointer. A bounded fail-open
-// try-lock protects only lookup/push/pop; contention skips correlation instead
-// of blocking the global Binder ioctl path.
+// Eight-way bucketed table keyed by current task pointer and checked against
+// pid/tgid to detect task-struct address reuse. A bounded fail-open try-lock
+// protects only lookup/push/pop; contention skips correlation instead of
+// blocking the global Binder ioctl path. Full buckets reclaim their oldest
+// outstanding frame so an exited client cannot permanently poison a bucket.
 struct alignas(8) BinderPendingSlot {
     uint64_t task_kaddr;
     uint32_t pid;
@@ -106,9 +108,11 @@ struct alignas(8) BinderPendingSlot {
     BinderPendingFrame frames[kPendingDepth];
 };
 
-// Four-way table of Widevine plugin handles owned by a Binder client. The
+// Eight-way table of Widevine plugin handles owned by a Binder client. The
 // Binder file pointer prevents cross-context handle aliasing; owner_tgid and
-// handle prevent cross-process reuse.
+// handle prevent cross-process reuse. registered_event_id is also the bounded
+// LRU age used to reclaim entries left behind by a client that exited without
+// emitting BC_RELEASE.
 struct alignas(8) BinderPluginSlot {
     uint64_t binder_file;
     uint64_t registered_event_id;

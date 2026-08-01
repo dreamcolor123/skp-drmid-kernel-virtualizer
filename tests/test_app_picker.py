@@ -76,7 +76,7 @@ class AppPickerFixtureTest(unittest.TestCase):
         self.assertIn("../app_catalog.cpp", ANDROID_MK)
         version = re.search(r'SKROOT_MODULE_VERSION\("([^\"]+)"\)',
                             (ROOT / "module_main.cpp").read_text())
-        self.assertEqual(version.group(1), "1.1.0")
+        self.assertEqual(version.group(1), "1.1.2")
 
 
 if __name__ == "__main__":
