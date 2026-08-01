@@ -1,0 +1,37 @@
+schema=skp-drmid-kernel66-sdk-probe-v1
+kernel=6.6.89
+probe_complete=yes symbol_code=1 live=1
+code.live_matches_symbol_bytes=1
+identity.euid_match=1
+identity.kernel_pid=1 kernel_tgid=1 pid_match=1 tgid_match=1
+offset.task.files.result=OK (0) value=2144
+offset.files.fdt.result=OK (0) value=32
+offset.fdtable.fd.result=OK (0) value=8
+offset.file.f_op.result=OK (0) value=192
+offset.file_operations.unlocked_ioctl.result=OK (0) value=72
+offset.task.pid.result=OK (0) value=1560
+offset.task.tgid.result=OK (0) value=1564
+offset.task.cred.result=OK (0) value=2080
+offset.cred.uid.result=OK (0) value=8
+offset.cred.euid.result=OK (0) value=24
+symbol.binder_ioctl.result=OK (0) address=0xffff000000001000
+live.unlocked_ioctl.result=OK (0) value=0xffff000000001000
+live.fops_matches_symbol=1
+live.ioctl_matches_symbol=1
+code.binder_ioctl_symbol.0000=3f2303d5ff4303d1fd7b07a9fc6f08a9
+code.binder_ioctl_symbol.0010=fa6709a9f85f0aa9f6570ba9f44f0ca9
+code.binder_ioctl_symbol.0020=fdc30191084138d5f90302aaf70300aa
+code.binder_ioctl_symbol.0030=081143f9f403012aa8831ff8156c40f9
+code.binder_ioctl_symbol.0040=1f2003d59ab500d048a344b91f090071
+code.binder_ioctl_symbol.0050=0b040054a0c300d1e1031f2abfff3ea9
+code.binder_ioctl_symbol.0060=bfff3da9bf031df8e299d19780ad0090
+code.binder_ioctl_symbol.0070=00201691a1c300d122008052e799d197
+code.binder_ioctl_symbol.0080=48a344b91f090071cb010054f60300aa
+code.binder_ioctl_symbol.0090=98ad009018231691560b00b5c26f0e94
+code.binder_ioctl_symbol.00a0=a1c300d1e00318aa22008052db99d197
+code.binder_ioctl_symbol.00b0=48a344b9f60300aa1f050071ecfeff54
+code.binder_ioctl_symbol.00c0=80ad009000201691a1c300d1ee95d197
+code.binder_ioctl_symbol.00d0=e00315aa3b110094800300b488408c52
+code.binder_ioctl_symbol.00e0=f60300aa8800a8729f02086b4c030054
+code.binder_ioctl_symbol.00f0=48418c520803b8729f02086b0c060054
+code.binder_ioctl_symbol.length=256 fnv1a64=62e54bf3e7aa39bb

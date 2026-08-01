@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <title>虚拟化DRM ID</title>
+  <style>
+    :root {
+      --blue: #0066cc;
+      --blue-focus: #0071e3;
+      --blue-dark: #2997ff;
+      --ink: #1d1d1f;
+      --muted: #7a7a7a;
+      --canvas: #ffffff;
+      --parchment: #f5f5f7;
+      --pearl: #fafafc;
+      --dark: #272729;
+      --black: #000000;
+      --hairline: #e0e0e0;
+      --divider: #f0f0f0;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--parchment);
+      color: var(--ink);
+      font: 400 17px/1.47 "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      letter-spacing: -.374px;
+      padding-bottom: calc(96px + env(safe-area-inset-bottom));
+    }
+    button, input, select, textarea { font: inherit; }
+    button { -webkit-tap-highlight-color: transparent; }
+    button:active { transform: scale(.95); }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
+      outline: 2px solid var(--blue-focus);
+      outline-offset: 2px;
+    }
+
+    .global-nav {
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 max(20px, env(safe-area-inset-left));
+      background: var(--black);
+      color: #fff;
+      font-size: 12px;
+      line-height: 1;
+      letter-spacing: -.12px;
+    }
+    .global-nav .context { color: #ccc; }
+    .product-nav {
+      position: sticky;
+      top: 0;
+      z-index: 8;
+      min-height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 8px max(20px, env(safe-area-inset-left));
+      border-bottom: 1px solid rgba(0,0,0,.08);
+      background: rgba(245,245,247,.86);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      backdrop-filter: saturate(180%) blur(20px);
+    }
+    .product-name {
+      min-width: 0;
+      font-family: "SF Pro Display", system-ui, -apple-system, sans-serif;
+      font-size: 19px;
+      font-weight: 600;
+      line-height: 1.1;
+      letter-spacing: -.28px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .nav-status {
+      min-height: 36px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 0;
+      border-radius: 9999px;
+      background: var(--canvas);
+      color: var(--ink);
+      padding: 8px 13px;
+      font-size: 14px;
+      line-height: 1.29;
+      letter-spacing: -.224px;
+      white-space: nowrap;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .nav-status[data-state="ok"] .status-dot { background: var(--blue); }
+    .nav-status[data-state="pending"] .status-dot { background: var(--muted); }
+    .nav-status[data-state="bad"] .status-dot { background: var(--ink); }
+
+    .tile { width: 100%; }
+    .content { width: min(980px, 100%); margin: 0 auto; padding-inline: 24px; }
+    .hero {
+      background: var(--canvas);
+      padding: 64px 0 56px;
+      text-align: center;
+    }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--blue);
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1.29;
+      letter-spacing: -.224px;
+    }
+    .hero h1 {
+      max-width: 720px;
+      margin: 0 auto;
+      font-family: "SF Pro Display", system-ui, -apple-system, sans-serif;
+      font-size: clamp(34px, 6vw, 56px);
+      font-weight: 600;
+      line-height: 1.07;
+      letter-spacing: -.28px;
+    }
+    .hero-copy {
+      max-width: 620px;
+      margin: 18px auto 0;
+      color: #333;
+      font-family: "SF Pro Display", system-ui, -apple-system, sans-serif;
+      font-size: clamp(19px, 3vw, 24px);
+      font-weight: 300;
+      line-height: 1.5;
+      letter-spacing: 0;
+    }
+    .hero-status {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      max-width: 720px;
+      margin: 40px auto 0;
+      overflow: hidden;
+      border: 1px solid var(--hairline);
+      border-radius: 18px;
+      background: var(--hairline);
+      text-align: left;
+    }
+    .hero-metric { min-width: 0; background: var(--pearl); padding: 18px 20px; }
+    .hero-metric > span { display: block; color: var(--muted); font-size: 12px; line-height: 1.3; letter-spacing: -.12px; }
+    .hero-metric strong { display: block; margin-top: 5px; font-size: 17px; font-weight: 600; line-height: 1.24; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-note { margin: 18px auto 0; color: var(--muted); font-size: 12px; line-height: 1.45; letter-spacing: -.12px; }
+
+    .workflow { background: var(--parchment); padding: 64px 0 72px; }
+    .section-heading { margin-bottom: 28px; }
+    .section-heading h2 {
+      margin: 0;
+      font-family: "SF Pro Display", system-ui, -apple-system, sans-serif;
+      font-size: clamp(28px, 4vw, 40px);
+      font-weight: 600;
+      line-height: 1.1;
+      letter-spacing: -.28px;
+    }
+    .section-heading p { max-width: 640px; margin: 10px 0 0; color: var(--muted); }
+    .setup-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 20px; }
+    .utility-card {
+      border: 1px solid var(--hairline);
+      border-radius: 18px;
+      background: var(--canvas);
+      padding: 24px;
+    }
+    .card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+    .step-label { margin: 0 0 4px; color: var(--blue); font-size: 14px; font-weight: 600; line-height: 1.29; }
+    .utility-card h3 { margin: 0; font-size: 21px; font-weight: 600; line-height: 1.19; letter-spacing: -.231px; }
+    .card-copy { margin: 9px 0 0; color: var(--muted); font-size: 14px; line-height: 1.43; letter-spacing: -.224px; }
+    .btn {
+      min-height: 44px;
+      border: 0;
+      border-radius: 9999px;
+      background: var(--pearl);
+      color: var(--blue);
+      padding: 10px 20px;
+      cursor: pointer;
+      line-height: 1.2;
+    }
+    .btn.primary { background: var(--blue); color: #fff; }
+    .btn.dark { border-radius: 8px; background: var(--ink); color: #fff; font-size: 14px; padding: 8px 15px; }
+    .btn.text { min-height: 44px; background: transparent; padding-inline: 8px; }
+    .btn:disabled { color: var(--muted); background: var(--divider); cursor: default; transform: none; }
+    .selected-apps { display: grid; gap: 8px; margin-top: 22px; }
+    .selection-empty { border-radius: 11px; background: var(--parchment); padding: 20px; color: var(--muted); text-align: center; font-size: 14px; }
+    .selected-app {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      border-bottom: 1px solid var(--divider);
+      padding: 9px 0;
+    }
+    .selected-app:last-child { border-bottom: 0; }
+    .selected-icon, .app-icon {
+      width: 40px;
+      height: 40px;
+      flex: 0 0 auto;
+      border-radius: 8px;
+      background: var(--parchment);
+      object-fit: cover;
+    }
+    .selected-icon.fallback, .app-icon.fallback { display: grid; place-items: center; color: var(--blue); font-weight: 600; }
+    .selected-info { min-width: 0; flex: 1; }
+    .selected-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; line-height: 1.29; }
+    .selected-package { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 12px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: 0; }
+    .selected-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .more-apps { color: var(--muted); font-size: 14px; text-align: center; padding-top: 4px; }
+
+    .mode-control { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 28px; border-radius: 18px; background: var(--parchment); padding: 18px; }
+    .mode-copy strong { display: block; font-size: 17px; font-weight: 600; line-height: 1.24; }
+    .mode-copy span { display: block; margin-top: 4px; color: var(--muted); font-size: 14px; line-height: 1.43; }
+    .switch { position: relative; width: 51px; height: 31px; flex: 0 0 auto; }
+    .switch input { position: absolute; opacity: 0; pointer-events: none; }
+    .switch-track { position: absolute; inset: 0; border-radius: 9999px; background: #d2d2d7; transition: background .2s; cursor: pointer; }
+    .switch-track::after { content: ""; position: absolute; width: 27px; height: 27px; left: 2px; top: 2px; border-radius: 50%; background: #fff; transition: transform .2s; }
+    .switch input:checked + .switch-track { background: var(--blue); }
+    .switch input:checked + .switch-track::after { transform: translateX(20px); }
+    .switch input:focus-visible + .switch-track { outline: 2px solid var(--blue-focus); outline-offset: 2px; }
+    .mode-state { margin-top: 18px; color: var(--muted); font-size: 14px; line-height: 1.43; }
+
+    .advanced { margin-top: 20px; border: 1px solid var(--hairline); border-radius: 18px; background: var(--canvas); overflow: hidden; }
+    .advanced summary, .diagnostics summary {
+      min-height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 24px;
+      cursor: pointer;
+      list-style: none;
+      font-weight: 600;
+    }
+    .advanced summary::-webkit-details-marker, .diagnostics summary::-webkit-details-marker { display: none; }
+    .advanced summary::after, .diagnostics summary::after { content: "+"; color: var(--blue); font-size: 24px; font-weight: 300; }
+    .advanced[open] summary::after, .diagnostics[open] summary::after { content: "−"; }
+    .advanced-body { border-top: 1px solid var(--divider); padding: 24px; }
+    .field { display: grid; gap: 8px; margin-bottom: 24px; }
+    .field:last-child { margin-bottom: 0; }
+    .field label { font-size: 14px; font-weight: 600; line-height: 1.29; }
+    .field-hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; letter-spacing: -.12px; }
+    .field input, .field textarea {
+      width: 100%;
+      border: 1px solid var(--hairline);
+      border-radius: 11px;
+      background: var(--canvas);
+      color: var(--ink);
+      padding: 12px 14px;
+      outline: 0;
+    }
+    .field textarea { min-height: 120px; resize: vertical; font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: 0; }
+    .input-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .id-state { color: var(--blue); font-size: 14px; }
+
+    .diagnostic-tile { background: var(--dark); color: #fff; padding: 64px 0 72px; }
+    .diagnostic-heading h2 { margin: 0; font-family: "SF Pro Display", system-ui, -apple-system, sans-serif; font-size: clamp(28px, 4vw, 40px); font-weight: 600; line-height: 1.1; }
+    .diagnostic-heading p { margin: 10px 0 0; color: #ccc; }
+    .diagnostics { margin-top: 28px; border-top: 1px solid #444; border-bottom: 1px solid #444; }
+    .diagnostics summary { padding-inline: 0; color: #fff; }
+    .diagnostics summary::after { color: var(--blue-dark); }
+    .diagnostic-body { border-top: 1px solid #444; padding: 24px 0 0; }
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .metric { min-width: 0; background: #2a2a2c; padding: 16px; }
+    .metric small { display: block; color: #ccc; font-size: 12px; line-height: 1.3; }
+    .metric strong { display: block; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; font: 600 14px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: nowrap; }
+    .status-list { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; margin-top: 24px; }
+    .status-row { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid #444; padding: 13px 0; }
+    .status-row span { color: #ccc; }
+    .status-row b { max-width: 62%; text-align: right; overflow-wrap: anywhere; font: 600 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .warn { display: none; margin-top: 18px; border-left: 3px solid var(--blue-dark); padding: 10px 14px; background: #2a2a2c; color: #fff; font-size: 14px; }
+    .warn.show { display: block; }
+    .pkg-list { display: grid; gap: 1px; margin-top: 20px; background: #444; }
+    .pkg-item { display: flex; justify-content: space-between; gap: 12px; background: var(--dark); padding: 11px 12px; font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .pkg-item.bad { color: #ccc; }
+    .log-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 28px; }
+    .log-tools .btn { color: var(--blue-dark); background: #2a2a2c; }
+    .log { height: 220px; overflow: auto; margin: 12px 0 0; background: #000; color: #ccc; padding: 16px; font: 12px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+    .danger-zone { margin-top: 32px; border-top: 1px solid #444; padding-top: 24px; }
+    .danger-zone h3 { margin: 0; font-size: 17px; font-weight: 600; }
+    .danger-zone p { margin: 8px 0 16px; color: #ccc; font-size: 14px; }
+    .danger-zone .btn { border-radius: 8px; background: #fff; color: var(--ink); }
+
+    .action-bar {
+      position: fixed;
+      z-index: 9;
+      left: 50%;
+      bottom: max(12px, env(safe-area-inset-bottom));
+      width: min(760px, calc(100% - 24px));
+      min-height: 64px;
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      border: 1px solid rgba(0,0,0,.08);
+      border-radius: 18px;
+      background: rgba(245,245,247,.9);
+      padding: 10px 12px 10px 20px;
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      backdrop-filter: saturate(180%) blur(20px);
+      transform: translateX(-50%);
+    }
+    .action-bar.visible { display: flex; }
+    .action-copy { min-width: 0; }
+    .action-copy strong { display: block; font-size: 14px; font-weight: 600; line-height: 1.29; }
+    .action-copy span { display: block; color: var(--muted); font-size: 12px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .action-bar .btn { flex: 0 0 auto; }
+
+    .picker-mask { display: none; position: fixed; inset: 0; z-index: 20; align-items: center; justify-content: center; padding: 18px; background: rgba(0,0,0,.58); }
+    .picker-mask.show { display: flex; }
+    .picker { display: flex; flex-direction: column; width: min(760px, 100%); max-height: min(760px, calc(100vh - 36px)); border-radius: 18px; background: var(--canvas); overflow: hidden; }
+    .picker-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--divider); padding: 20px 20px 16px; }
+    .picker-head h3 { margin: 0; font-size: 21px; font-weight: 600; line-height: 1.19; }
+    .picker-head p { margin: 5px 0 0; color: var(--muted); font-size: 14px; }
+    .picker-head .btn { min-width: 44px; padding-inline: 12px; background: var(--parchment); }
+    .picker-tools { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 14px 16px 10px; }
+    .picker-tools input, .picker-tools select { min-height: 44px; border: 1px solid rgba(0,0,0,.08); border-radius: 9999px; background: var(--canvas); color: var(--ink); padding: 10px 18px; outline: 0; }
+    .picker-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 16px 10px; }
+    .picker-actions .btn { padding-inline: 10px; background: transparent; }
+    .picker-list { overflow: auto; display: grid; gap: 0; padding: 0 16px; }
+    .app-option { display: flex; align-items: center; gap: 12px; min-height: 64px; border-bottom: 1px solid var(--divider); padding: 10px 4px; cursor: pointer; }
+    .app-option input { width: 21px; height: 21px; flex: 0 0 auto; accent-color: var(--blue); }
+    .app-info { min-width: 0; flex: 1; }
+    .app-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; line-height: 1.29; }
+    .app-package { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: 0; }
+    .app-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .picker-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--divider); background: rgba(245,245,247,.92); padding: 12px 16px; -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px); }
+    .picker-foot span { color: var(--muted); font-size: 14px; }
+    .picker-foot .right { display: flex; gap: 6px; }
+    .toast { position: fixed; z-index: 30; left: 50%; bottom: 96px; max-width: calc(100% - 40px); border-radius: 11px; background: rgba(29,29,31,.94); color: #fff; padding: 10px 15px; opacity: 0; pointer-events: none; transform: translate(-50%, 12px); transition: .2s; text-align: center; font-size: 14px; }
+    .toast.show { opacity: 1; transform: translate(-50%, 0); }
+    .sr-only { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0,0,0,0) !important; white-space: nowrap !important; border: 0 !important; }
+
+    @media (max-width: 833px) {
+      .setup-grid { grid-template-columns: 1fr; }
+      .metrics { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 640px) {
+      .content { padding-inline: 20px; }
+      .hero { padding: 48px 0; }
+      .workflow, .diagnostic-tile { padding: 48px 0 56px; }
+      .hero-status { grid-template-columns: 1fr; }
+      .hero-metric { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 16px; }
+      .hero-metric strong { margin-top: 0; text-align: right; }
+      .card-top { align-items: center; }
+      .utility-card { padding: 20px; }
+      .status-list { grid-template-columns: 1fr; }
+      .picker-mask { align-items: flex-end; padding: 0; }
+      .picker { width: 100%; max-height: calc(100vh - 20px); border-radius: 18px 18px 0 0; }
+      .picker-tools { grid-template-columns: 1fr; }
+      .app-meta { display: none; }
+      .action-copy { display: none; }
+      .action-bar { justify-content: stretch; padding: 10px; }
+      .action-bar .btn { width: 100%; }
+    }
+    @media (max-width: 419px) {
+      .global-nav .context { display: none; }
+      .product-nav { padding-inline: 16px; }
+      .product-name { font-size: 17px; }
+      .nav-status span:last-child { max-width: 108px; overflow: hidden; text-overflow: ellipsis; }
+      .hero h1 { font-size: 32px; }
+      .hero-copy { font-size: 19px; }
+      .card-top { align-items: flex-start; }
+      .card-top .btn { padding-inline: 16px; }
+      .metrics { grid-template-columns: 1fr; }
+      .picker-foot .btn.text { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="global-nav" aria-label="模块上下文">
+    <span>SKP 模块</span>
+    <span class="context">Android 14+ · ARM64 · Linux 6.6 / 6.12</span>
+  </nav>
+
+  <header class="product-nav">
+    <div class="product-name">虚拟化DRM ID</div>
+    <button id="refresh" class="nav-status" type="button" data-state="pending" aria-label="刷新服务状态">
+      <i class="status-dot" aria-hidden="true"></i><span id="healthText">正在连接</span>
+    </button>
+  </header>
+
+  <main>
+    <section class="tile hero">
+      <div class="content">
+        <p class="eyebrow">1.1.0 · 斓梦语</p>
+        <h1 id="heroTitle">选择应用，一次启用</h1>
+        <p id="heroCopy" class="hero-copy">连接服务后，从设备列表选择需要使用虚拟 ID 的应用</p>
+        <div class="hero-status" aria-label="当前配置摘要">
+          <div class="hero-metric"><span>当前状态</span><strong id="quickMode">正在读取</strong></div>
+          <div class="hero-metric"><span>已选应用</span><strong><span id="targetCount">—</span> 个</strong></div>
+          <div class="hero-metric"><span>设备原ID指纹</span><strong id="deviceFingerprintShort">待采集</strong></div>
+          <div class="hero-metric"><span>虚拟ID指纹</span><strong id="virtualFingerprintShort">未启用</strong></div>
+        </div>
+        <p class="session-note">操作期间请保持页面在前台；离开后请从管理器模块页重新打开</p>
+      </div>
+    </section>
+
+    <section class="tile workflow">
+      <div class="content">
+        <div class="section-heading">
+          <h2>两步完成设置</h2>
+          <p>选择应用并确认生效方式，其他参数会沿用当前稳定配置</p>
+        </div>
+
+        <form id="configForm">
+          <div class="setup-grid">
+            <article class="utility-card">
+              <div class="card-top">
+                <div>
+                  <p class="step-label">第 1 步</p>
+                  <h3>选择应用</h3>
+                  <p class="card-copy"><span id="selectedCount">0</span>/32 个应用</p>
+                </div>
+                <button id="pickApps" class="btn" type="button" disabled>选择应用</button>
+              </div>
+              <div id="selectedApps" class="selected-apps">
+                <div class="selection-empty">尚未选择应用</div>
+              </div>
+            </article>
+
+            <article class="utility-card">
+              <p class="step-label">第 2 步</p>
+              <h3>确认生效方式</h3>
+              <p class="card-copy">首次设置默认启用虚拟 ID，关闭后只记录命中情况</p>
+              <div class="mode-control">
+                <div class="mode-copy">
+                  <strong>启用虚拟 ID</strong>
+                  <span id="modeDescription">所选应用将读取虚拟 ID</span>
+                </div>
+                <label class="switch">
+                  <span class="sr-only">启用虚拟 ID</span>
+                  <input id="effectToggle" type="checkbox" role="switch" aria-describedby="modeDescription">
+                  <span class="switch-track" aria-hidden="true"></span>
+                </label>
+              </div>
+              <p id="modeState" class="mode-state">正在读取当前设置…</p>
+              <select id="mode" name="mode" hidden aria-hidden="true" tabindex="-1">
+                <option value="dry">仅观测（Dry-run）</option>
+                <option value="write">写入虚拟 ID</option>
+              </select>
+            </article>
+          </div>
+
+          <details class="advanced">
+            <summary>高级设置</summary>
+            <div class="advanced-body">
+              <div class="field">
+                <label for="packages">手动编辑包名</label>
+                <textarea id="packages" name="packages" maxlength="4096" autocomplete="off" placeholder="请从设备选择应用，或输入包名"></textarea>
+                <p class="field-hint">支持换行或逗号分隔，保存时自动排序并去重；任一包名未解析时，当前配置保持不变</p>
+              </div>
+              <div class="field">
+                <label for="idHex">虚拟 ID</label>
+                <input id="idHex" name="id_hex" maxlength="64" placeholder="保持当前虚拟 ID" spellcheck="false" autocomplete="off">
+                <div class="input-actions">
+                  <button id="randomId" class="btn" type="button">生成随机 ID</button>
+                  <button id="clearId" class="btn" type="button">使用自动生成 ID</button>
+                </div>
+                <span id="idState" class="id-state">保持当前虚拟 ID</span>
+                <p class="field-hint">自定义值需要 64 个十六进制字符；应用列表变化不会自动改变当前 ID</p>
+              </div>
+            </div>
+          </details>
+          <input id="idAction" name="id_action" type="hidden" value="keep">
+
+          <button id="apply" class="sr-only" type="submit" disabled>正在读取状态…</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="tile diagnostic-tile">
+      <div class="content">
+        <div class="diagnostic-heading">
+          <h2>诊断信息</h2>
+          <p>日常使用无需展开；排查连接、UID 或规则问题时再查看</p>
+        </div>
+        <details class="diagnostics">
+          <summary>查看运行详情和日志</summary>
+          <div class="diagnostic-body">
+            <div class="metrics">
+              <div class="metric"><small>配置代次</small><strong id="generation">—</strong></div>
+              <div class="metric"><small>活动槽位</small><strong id="slot">—</strong></div>
+              <div class="metric"><small>规则命中 / 检查</small><strong id="matches">—</strong></div>
+              <div class="metric"><small>热切换 / 拒绝</small><strong id="switches">—</strong></div>
+              <div class="metric"><small>运行模式</small><strong id="activeMode">—</strong></div>
+              <div class="metric"><small>设备原ID指纹</small><strong id="deviceFingerprint">待采集</strong></div>
+              <div class="metric"><small>虚拟ID指纹</small><strong id="virtualFingerprint">未启用</strong></div>
+              <div class="metric"><small>守护进程 PID</small><strong id="pid">—</strong></div>
+              <div class="metric"><small>活动调用</small><strong id="calls">—</strong></div>
+            </div>
+            <div class="status-list">
+              <div class="status-row"><span>Seed 代次</span><b id="seed">—</b></div>
+              <div class="status-row"><span>ID 长度</span><b id="length">—</b></div>
+              <div class="status-row"><span>规则模式</span><b id="rule">—</b></div>
+              <div class="status-row"><span>规则未命中</span><b id="misses">—</b></div>
+              <div class="status-row"><span>活动 EUID 集合</span><b id="targetEuids">—</b></div>
+              <div class="status-row"><span>输入去重</span><b id="duplicates">—</b></div>
+              <div class="status-row"><span>未解析项</span><b id="unresolved">—</b></div>
+            </div>
+            <div id="sharedUidWarn" class="warn">检测到 shared UID：同一 UID 下的其他进程也会共同命中</div>
+            <div id="packageStatus" class="pkg-list"></div>
+
+            <div class="log-tools">
+              <button id="copyLog" class="btn" type="button">复制日志</button>
+              <button id="downloadLog" class="btn" type="button">下载日志</button>
+              <button id="clearLog" class="btn" type="button">清空日志</button>
+            </div>
+            <pre id="log" class="log"></pre>
+
+            <div class="danger-zone">
+              <h3>高级操作</h3>
+              <p>停止模块服务后，本次启动期间不再提供虚拟 ID；设备重启后重新加载</p>
+              <button id="stop" class="btn" type="button">停止模块服务</button>
+            </div>
+          </div>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <div id="actionBar" class="action-bar" aria-live="polite">
+    <div class="action-copy">
+      <strong id="actionTitle">有尚未应用的更改</strong>
+      <span id="actionSummary">检查设置后应用</span>
+    </div>
+    <button id="applyAction" class="btn primary" type="button" disabled>正在读取状态…</button>
+  </div>
+
+  <div id="appPickerMask" class="picker-mask" aria-hidden="true">
+    <section class="picker" role="dialog" aria-modal="true" aria-labelledby="appPickerTitle">
+      <header class="picker-head">
+        <div><h3 id="appPickerTitle">选择应用</h3><p id="appPickerHint">读取设备上的应用、名称和 UID</p></div>
+        <button id="closeAppPicker" class="btn" type="button" aria-label="关闭应用选择器">关闭</button>
+      </header>
+      <div class="picker-tools">
+        <input id="appSearch" type="search" placeholder="搜索应用名称或包名" autocomplete="off">
+        <select id="appFilter" aria-label="应用类型"><option value="user">用户应用</option><option value="all">全部应用</option><option value="system">系统应用</option></select>
+      </div>
+      <div class="picker-actions">
+        <button id="selectVisibleApps" class="btn" type="button">全选当前结果</button>
+        <button id="clearSelectedApps" class="btn" type="button">清空选择</button>
+      </div>
+      <div id="appList" class="picker-list"><div class="selection-empty">正在读取应用列表…</div></div>
+      <footer class="picker-foot">
+        <span id="appSelectionSummary">已选 0/32</span>
+        <div class="right">
+          <button id="cancelAppPicker" class="btn text" type="button">取消</button>
+          <button id="confirmAppPicker" class="btn primary" type="button">使用所选应用</button>
+        </div>
+      </footer>
+    </section>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+
+  <script>
+    const $=id=>document.getElementById(id),logEl=$('log'),health=$('refresh');
+    let timer=0,heartbeatTimer=0,stopResetTimer=0,stopArmedUntil=0,busy=false,formInitialized=false,sessionToken='',sessionClosed=false,deviceApps=[],appsLoading=null,pickerSelected=new Set(),lastStatus=null,baselineSignature='';
+
+    function stamp(){return new Date().toLocaleTimeString('zh-CN',{hour12:false})}
+    function log(msg,obj){logEl.textContent+=`[${stamp()}] ${msg}${obj?'\n'+JSON.stringify(obj,null,2):''}\n`;logEl.scrollTop=logEl.scrollHeight}
+    function toast(msg){const e=$('toast');e.textContent=msg;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('show'),2200)}
+    async function api(path,body='',withSession=true){const params=body instanceof URLSearchParams?body:new URLSearchParams(body);if(withSession&&sessionToken)params.set('session_token',sessionToken);const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:params.toString()});let data;try{data=await r.json()}catch{data={result:-1,stage:'response-json'}}if(!r.ok)throw Object.assign(new Error(data.stage||`HTTP ${r.status}`),{data,status:r.status});return data}
+    function closeSession(reason){if(sessionClosed||!sessionToken)return;sessionClosed=true;clearInterval(timer);clearInterval(heartbeatTimer);$('pickApps').disabled=true;$('applyAction').disabled=true;closeAppPicker();const body=new URLSearchParams({session_token:sessionToken,reason});if(navigator.sendBeacon){navigator.sendBeacon('/api/session/close',body)}else{fetch('/api/session/close',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString(),keepalive:true}).catch(()=>{})}setHealth(false,'页面已离开');$('heroCopy').textContent='请从管理器模块页重新打开 WebUI，建立新的前台会话'}
+    function armHeartbeat(ms){clearInterval(heartbeatTimer);heartbeatTimer=setInterval(()=>{if(!document.hidden&&!sessionClosed)api('/api/session/ping').catch(()=>{})},Math.max(2000,Number(ms)||4000))}
+    function setHealth(ok,text){health.dataset.state=ok===true?'ok':ok===false?'bad':'pending';$('healthText').textContent=text}
+    function escapeHtml(v){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+    function currentPackageTokens(){return $('packages').value.split(/[\n,\r]+/).map(x=>x.trim()).filter(Boolean)}
+    function uniquePackages(){return [...new Set(currentPackageTokens())].sort()}
+    function appForPackage(pkg){return deviceApps.find(app=>String(app.package||'')===pkg)}
+    function statusForPackage(pkg){const list=lastStatus&&Array.isArray(lastStatus.package_status)?lastStatus.package_status:[];return list.find(item=>String(item.package||'')===pkg)}
+    function configSignature(){return JSON.stringify({packages:uniquePackages(),mode:$('mode').value,idAction:$('idAction').value,idHex:$('idAction').value==='custom'?$('idHex').value.trim().toLowerCase():''})}
+
+    function renderSelectedApps(){
+      const packages=uniquePackages();$('selectedCount').textContent=packages.length;
+      if(!packages.length){$('selectedApps').innerHTML='<div class="selection-empty">尚未选择应用，请从设备列表添加</div>';return}
+      const visible=packages.slice(0,5);$('selectedApps').innerHTML=visible.map(pkg=>{const app=appForPackage(pkg),status=statusForPackage(pkg),label=app&&app.label?app.label:pkg,icon=app&&app.icon?`<img class="selected-icon" src="${escapeHtml(app.icon)}" alt="">`:`<span class="selected-icon fallback">${escapeHtml(label.slice(0,1).toUpperCase())}</span>`,uid=app&&app.uid?app.uid:(status&&status.uid?status.uid:'待解析');return `<div class="selected-app">${icon}<span class="selected-info"><span class="selected-label">${escapeHtml(label)}</span><span class="selected-package">${escapeHtml(pkg)}</span></span><span class="selected-meta">${escapeHtml(uid)}</span></div>`}).join('')+(packages.length>5?`<div class="more-apps">另有 ${packages.length-5} 个应用</div>`:'')
+    }
+
+    function renderPackages(s){const list=Array.isArray(s.package_status)?s.package_status:[],unresolved=Array.isArray(s.unresolved_packages)?s.unresolved_packages:[];$('packageStatus').innerHTML=list.length?list.map(x=>`<div class="pkg-item ${x.uid?'':'bad'}"><span>${escapeHtml(x.package)}</span><b>${x.uid||'未解析'}</b></div>`).join(''):'<div class="pkg-item"><span>尚未配置目标应用</span><b>—</b></div>';$('duplicates').textContent=s.duplicate_count??0;$('unresolved').textContent=unresolved.join(', ')||'—';$('sharedUidWarn').classList.toggle('show',!!s.shared_uid)}
+    function setModeFromToggle(){const enabled=$('effectToggle').checked;$('mode').value=enabled?'write':'dry';$('modeDescription').textContent=enabled?'所选应用将读取虚拟 ID':'只记录命中情况，不改变读取结果';$('modeState').textContent=enabled?'启用后立即对所选应用生效':'当前选择为测试模式';markDirty()}
+    function updateIdState(){const action=$('idAction').value;$('idState').textContent=action==='custom'?'将使用新的自定义 ID':action==='derive'?'使用自动生成 ID':'保持当前虚拟 ID'}
+    function updateActionBar(){
+      const packages=uniquePackages(),dirty=formInitialized&&configSignature()!==baselineSignature,firstStart=lastStatus&&lastStatus.configured===false;
+      $('actionBar').classList.toggle('visible',!!(dirty||firstStart));
+      $('apply').disabled=busy||sessionClosed||!formInitialized||!dirty||!packages.length;
+      $('applyAction').disabled=$('apply').disabled;
+      if(!formInitialized){$('applyAction').textContent='正在读取状态…';return}
+      if(!packages.length){$('applyAction').textContent='先选择应用';$('actionTitle').textContent='从选择应用开始';$('actionSummary').textContent='最多可选择 32 个应用';return}
+      if(!dirty){$('applyAction').textContent='已是最新配置';$('actionTitle').textContent='当前配置已生效';$('actionSummary').textContent=`${packages.length} 个应用`;return}
+      const enabled=$('mode').value==='write';$('applyAction').textContent=enabled?(firstStart?'启用并应用':'应用更改'):'切换到测试模式';$('actionTitle').textContent='有尚未应用的更改';$('actionSummary').textContent=`${packages.length} 个应用 · ${enabled?'启用虚拟 ID':'仅测试'}`
+    }
+    function markDirty(){if(!formInitialized)return;renderSelectedApps();updateIdState();updateActionBar()}
+
+    function syncConfig(s){
+      $('packages').value=Array.isArray(s.package_status)?s.package_status.map(x=>x.package).join('\n'):'';
+      $('effectToggle').checked=s.configured===false?true:s.mode===1;$('mode').value=$('effectToggle').checked?'write':'dry';
+      $('idHex').value='';$('idAction').value=s.configured===false?'derive':'keep';formInitialized=true;baselineSignature=configSignature();
+      setModeFromToggle();baselineSignature=configSignature();updateIdState();renderSelectedApps();updateActionBar()
+    }
+    function render(s,syncForm=false){
+      lastStatus=s;const enabled=s.mode===1&&s.configured!==false,deviceFingerprint=s.device_fingerprint||'待采集',virtualFingerprint=enabled?(s.fingerprint||'—'):'未启用';$('generation').textContent=s.generation;$('slot').textContent=s.slot;$('matches').textContent=`${s.rule_matches} / ${s.rule_checks}`;$('switches').textContent=`${s.switches} / ${s.rejections}`;$('targetCount').textContent=s.target_count;$('activeMode').textContent=enabled?'已启用':'测试模式';$('deviceFingerprint').textContent=deviceFingerprint;$('deviceFingerprintShort').textContent=deviceFingerprint;$('virtualFingerprint').textContent=virtualFingerprint;$('virtualFingerprintShort').textContent=virtualFingerprint;$('pid').textContent=s.daemon_pid;$('calls').textContent=s.active_calls;$('seed').textContent=s.seed_generation;$('length').textContent=`${s.length} bytes`;$('rule').textContent=['全部 UID','精确 UID','精确包名集合'][s.rule]??s.rule;$('misses').textContent=s.rule_misses;$('targetEuids').textContent=(s.target_euids||[]).join(', ')||'—';renderPackages(s);
+      if(syncForm||!formInitialized)syncConfig(s);else{renderSelectedApps();updateActionBar()}
+      $('pickApps').disabled=false;
+      const unconfigured=s.configured===false;
+      $('quickMode').textContent=unconfigured?'等待设置':enabled?'已启用':'测试模式';
+      $('heroTitle').textContent=unconfigured?'选择应用，一次启用':enabled?'虚拟 ID 已启用':'测试模式运行中';
+      $('heroCopy').textContent=unconfigured?'选择应用后即可启用；虚拟 ID 将沿用当前稳定配置':enabled?`已对 ${s.target_count} 个应用启用虚拟 ID`:`正在观察 ${s.target_count} 个应用，不会改变其读取结果`;
+      setHealth(true,unconfigured?'等待选择应用':'服务运行正常')
+    }
+    async function refresh(silent=false){if(busy||sessionClosed)return;try{const s=await api('/api/status');render(s);if(!silent)log('STATUS',s)}catch(e){const starting=e.data&&e.data.stage==='daemon-starting';setHealth(starting?null:false,e.status===401?'会话已关闭':starting?'服务正在准备':'服务未连接');$('quickMode').textContent=starting?'正在准备':'连接异常';if(!silent)log(`STATUS 失败: ${e.message}`,e.data)}}
+
+    function loadDeviceApps(silent=false){
+      if(deviceApps.length)return Promise.resolve(deviceApps);if(appsLoading)return appsLoading;
+      appsLoading=api('/api/apps').then(data=>{deviceApps=Array.isArray(data.apps)?data.apps:[];renderSelectedApps();return deviceApps}).catch(e=>{if(!silent)log(`应用列表失败: ${e.message}`,e.data);throw e}).finally(()=>{appsLoading=null});return appsLoading
+    }
+    function openAppPicker(){
+      pickerSelected=new Set(currentPackageTokens());$('appPickerMask').classList.add('show');$('appPickerMask').setAttribute('aria-hidden','false');document.body.style.overflow='hidden';$('appSearch').value='';$('appFilter').value='user';$('appList').innerHTML='<div class="selection-empty">正在读取应用列表…</div>';$('appPickerHint').textContent='读取设备上的应用、名称和 UID';updatePickerSummary();
+      loadDeviceApps().then(()=>{$('appPickerHint').textContent=`已读取 ${deviceApps.length} 个应用`;renderAppPicker()}).catch(()=>{$('appPickerHint').textContent='应用列表读取失败';$('appList').innerHTML='<div class="selection-empty">仍可在高级设置中手动输入包名</div>'})
+    }
+    function closeAppPicker(){$('appPickerMask').classList.remove('show');$('appPickerMask').setAttribute('aria-hidden','true');document.body.style.overflow=''}
+    function updatePickerSummary(){$('appSelectionSummary').textContent=`已选 ${pickerSelected.size}/32`;$('confirmAppPicker').disabled=pickerSelected.size===0||pickerSelected.size>32;$('confirmAppPicker').textContent=pickerSelected.size?`使用所选应用（${pickerSelected.size}）`:'使用所选应用'}
+    function filteredApps(){const keyword=$('appSearch').value.trim().toLocaleLowerCase(),filter=$('appFilter').value;return deviceApps.filter(app=>{if(filter==='user'&&app.system)return false;if(filter==='system'&&!app.system)return false;return !keyword||String(app.label||'').toLocaleLowerCase().includes(keyword)||String(app.package||'').toLocaleLowerCase().includes(keyword)})}
+    function syncPickerLimit(){const atLimit=pickerSelected.size>=32;document.querySelectorAll('#appList input[type="checkbox"]').forEach(box=>{box.disabled=atLimit&&!box.checked});updatePickerSummary()}
+    function renderAppPicker(){
+      const list=filteredApps().sort((a,b)=>String(a.label||a.package).localeCompare(String(b.label||b.package),'zh-CN'));$('appList').innerHTML='';
+      if(!list.length){$('appList').innerHTML='<div class="selection-empty">没有匹配的应用</div>';updatePickerSummary();return}
+      for(const app of list){const pkg=String(app.package||''),row=document.createElement('label');row.className='app-option';const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=pickerSelected.has(pkg);checkbox.disabled=!checkbox.checked&&pickerSelected.size>=32;checkbox.addEventListener('change',()=>{if(checkbox.checked){if(pickerSelected.size>=32){checkbox.checked=false;toast('最多选择 32 个应用');return}pickerSelected.add(pkg)}else pickerSelected.delete(pkg);syncPickerLimit()});const icon=app.icon?`<img class="app-icon" src="${escapeHtml(app.icon)}" alt="">`:`<span class="app-icon fallback">${escapeHtml(String(app.label||pkg).slice(0,1).toUpperCase())}</span>`,label=escapeHtml(app.label||pkg),system=app.system?' · 系统':'';row.innerHTML=`${icon}<span class="app-info"><span class="app-label">${label}</span><span class="app-package">${escapeHtml(pkg)}</span></span><span class="app-meta">UID ${escapeHtml(app.uid??'—')}${system}</span>`;row.prepend(checkbox);$('appList').appendChild(row)}updatePickerSummary()
+    }
+
+    $('pickApps').onclick=openAppPicker;$('closeAppPicker').onclick=closeAppPicker;$('cancelAppPicker').onclick=closeAppPicker;$('appPickerMask').onclick=e=>{if(e.target===$('appPickerMask'))closeAppPicker()};$('appSearch').oninput=renderAppPicker;$('appFilter').onchange=renderAppPicker;
+    $('selectVisibleApps').onclick=()=>{for(const app of filteredApps()){if(pickerSelected.size>=32)break;pickerSelected.add(String(app.package||''))}renderAppPicker();toast(pickerSelected.size>=32?'已达到 32 个应用上限':'已选中当前结果')};
+    $('clearSelectedApps').onclick=()=>{pickerSelected.clear();renderAppPicker()};
+    $('confirmAppPicker').onclick=()=>{if(!pickerSelected.size||pickerSelected.size>32){toast('请选择 1–32 个应用');return}$('packages').value=[...pickerSelected].sort().join('\n');closeAppPicker();markDirty();toast('应用已选好，点击下方按钮即可生效')};
+    $('effectToggle').onchange=setModeFromToggle;$('packages').oninput=markDirty;
+    $('idHex').oninput=()=>{$('idAction').value=$('idHex').value.trim()?'custom':'keep';markDirty()};
+    $('randomId').onclick=()=>{const b=new Uint8Array(32);crypto.getRandomValues(b);$('idHex').value=[...b].map(x=>x.toString(16).padStart(2,'0')).join('');$('idAction').value='custom';markDirty()};
+    $('clearId').onclick=()=>{$('idHex').value='';$('idAction').value='derive';markDirty();toast('应用更改后将使用自动生成 ID')};
+    $('applyAction').onclick=()=>{$('configForm').requestSubmit()};
+    $('configForm').onsubmit=async e=>{e.preventDefault();if(!formInitialized)return;const id=$('idHex').value.trim();if($('idAction').value==='custom'&&!/^[0-9a-fA-F]{64}$/.test(id)){toast('自定义 ID 需要 64 个十六进制字符');return}const tokens=currentPackageTokens(),unique=[...new Set(tokens)];if(!unique.length||unique.length>32){toast('请选择 1–32 个应用');return}if(unique.some(x=>!/^([A-Za-z0-9_]+\.)+[A-Za-z0-9_]+$/.test(x))){toast('存在格式有误的包名');return}busy=true;updateActionBar();$('applyAction').disabled=true;$('applyAction').textContent='正在应用…';try{const body=new URLSearchParams(new FormData(e.currentTarget)).toString(),s=await api('/api/apply',body);render(s,true);log('APPLY 成功',s);toast(s.duplicate_count?`已去重 ${s.duplicate_count} 项并应用`:'更改已应用')}catch(err){if(err.data)renderPackages(err.data);log(`APPLY 失败: ${err.message}`,err.data);toast('本次更改未生效，当前配置保持不变')}finally{busy=false;updateActionBar()}};
+    $('stop').onclick=async()=>{const button=$('stop'),now=Date.now();if(now>stopArmedUntil){stopArmedUntil=now+5000;button.textContent='再次点击确认停止';clearTimeout(stopResetTimer);stopResetTimer=setTimeout(()=>{stopArmedUntil=0;button.textContent='停止模块服务'},5000);toast('5 秒内再次点击确认停止');return}stopArmedUntil=0;clearTimeout(stopResetTimer);button.disabled=true;button.textContent='正在停止…';try{const s=await api('/api/stop');log('STOP',s);setHealth(false,'服务已停止');$('quickMode').textContent='已停止';$('heroCopy').textContent='设备重启后模块服务会重新加载';toast('模块服务已停止')}catch(e){button.disabled=false;button.textContent='停止模块服务';log(`STOP 失败: ${e.message}`,e.data)}};
+    $('copyLog').onclick=async()=>{try{await navigator.clipboard.writeText(logEl.textContent);toast('日志已复制')}catch{toast('复制操作未完成')}};
+    $('downloadLog').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([logEl.textContent],{type:'text/plain;charset=utf-8'}));a.download=`drmid-webui-${Date.now()}.log`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+    $('clearLog').onclick=()=>{logEl.textContent=''};
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)closeSession('visibility-hidden')});window.addEventListener('pagehide',()=>closeSession('pagehide'));window.addEventListener('beforeunload',()=>closeSession('beforeunload'));window.addEventListener('freeze',()=>closeSession('freeze'));
+    (async()=>{try{const s=await api('/api/session/open','',false);sessionToken=s.session_token;armHeartbeat(s.heartbeat_ms);await refresh();loadDeviceApps(true).catch(()=>{});timer=setInterval(()=>refresh(true),3000);if(document.hidden)closeSession('initial-hidden')}catch(e){setHealth(false,'会话未建立');$('quickMode').textContent='连接异常';$('heroCopy').textContent='请从管理器模块页重新打开 WebUI';log(`SESSION 失败: ${e.message}`,e.data)}})();
+  </script>
+</body>
+</html>

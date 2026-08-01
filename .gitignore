@@ -1,0 +1,26 @@
+# Android NDK outputs
+/libs/
+/obj/
+/jni/libs/
+/jni/obj/
+
+# Release artifacts and generated helper payload
+/dist/
+/label_helper/*.jar
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Local SDK/prebuilt material
+/kernel_module_kit/
+/prebuilt/
+/generated/
+/.env
+.env.*
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

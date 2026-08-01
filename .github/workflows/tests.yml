@@ -1,0 +1,31 @@
+name: offline-fixtures
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run offline fixtures
+        run: python3 -m unittest discover -s tests -v
+      - name: Check WebUI JavaScript syntax
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          html = Path("webroot/index.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>", html, re.S | re.I)
+          if not scripts:
+              raise SystemExit("no inline script")
+          Path("/tmp/drmid-webui.js").write_text("\n".join(scripts), encoding="utf-8")
+          PY
+          node --check /tmp/drmid-webui.js
