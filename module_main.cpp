@@ -820,6 +820,10 @@ KModErr run_readonly_parser_probe(const char* root_key,
            reinterpret_cast<void*>(session.context_kaddr),
            drmid::kCounterContextAbi,
            sizeof(drmid::KernelCounterContext));
+    printf("[drmid612] Binder entry gate=installer-tgid,target-euid,"
+           "app-euid>=%u installer-tgid=%d\n",
+           10000U,
+           getpid());
 
     drmid::KernelCounterContext before{};
     drmid::KernelCounterContext after{};
@@ -1166,7 +1170,7 @@ void module_on_uninstall(const char*, const char* module_private_dir) {
 }
 
 SKROOT_MODULE_NAME("虚拟化DRM ID")
-SKROOT_MODULE_VERSION("1.1.2")
+SKROOT_MODULE_VERSION("1.1.3-rc2")
 SKROOT_MODULE_DESC("面向 Android 14+ / Linux 6.6与6.12 的多应用内核级 DRM ID 虚拟化，支持 WebUI 实时配置")
 SKROOT_MODULE_AUTHOR("斓梦语")
 SKROOT_MODULE_ID32("drmidKern612Probe20260728Alpha01")

@@ -6,7 +6,7 @@
 namespace drmid {
 
 constexpr uint64_t kCounterContextMagic = 0x44524d4944363132ULL; // "DRMID612"
-constexpr uint64_t kCounterContextAbi = 16;
+constexpr uint64_t kCounterContextAbi = 17;
 constexpr size_t kRuntimeTargetLimit = 32;
 constexpr size_t kTransactionEventCapacity = 256;
 constexpr size_t kPendingSlotCapacity = 256;

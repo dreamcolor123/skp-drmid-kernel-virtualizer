@@ -17,7 +17,7 @@ WEBROOT = ROOT / "webroot"
 DAEMON = ROOT / "libs" / "arm64-v8a" / "drmid_probe_runner"
 LABEL_HELPER = ROOT / "label_helper" / "drmid_label_helper.jar"
 DIST = ROOT / "dist"
-VERSION = "1.1.2"
+VERSION = "1.1.3-rc2"
 DISPLAY_NAME = "虚拟化DRM ID"
 AUTHOR = "斓梦语"
 ZIP = DIST / f"module_drmid_kernel_virtualizer-{VERSION}-arm64-run-once.zip"
@@ -246,7 +246,7 @@ def verify_release_inputs() -> None:
         "pending_lock_drops",
         "plugin_lock_state",
         "plugin_lock_drops",
-        "kCounterContextAbi = 16",
+        "kCounterContextAbi = 17",
         "kPendingBucketWays = 8",
         "kPendingBucketWayShift = 3",
         "task_struct address can be reused",
@@ -255,6 +255,12 @@ def verify_release_inputs() -> None:
         "kPluginBucketWayShift = 3",
         "least-recently-used occupied slot",
         "recovered collision/eviction events",
+        "emit_package_uid_or_target_gate",
+        "kAndroidAppUidStart = 10000",
+        "aarch64_asm_mov_w(a, w12, kAndroidAppUidStart)",
+        "without touching counters",
+        "static_cast<uint32_t>(getpid())",
+        "app_uid_check",
     )
     hook_lock_text = hook_lock_source + context_source
     missing_hook_lock = [
@@ -282,6 +288,7 @@ def verify_release_inputs() -> None:
         "miss/overflow/reclaim/oneway=",
         "map insert/reuse/reclaim/active=",
         "Binder parser hook installed context=%p abi=%",
+        "Binder entry gate=installer-tgid,target-euid,",
     )
     missing_reclaim_diagnostics = [
         marker for marker in required_reclaim_diagnostics
@@ -291,6 +298,21 @@ def verify_release_inputs() -> None:
         raise SystemExit(
             "Binder map reclaim diagnostics guard failed: "
             f"missing={missing_reclaim_diagnostics}"
+        )
+
+    control_source = (ROOT / "control_ipc.cpp").read_text(encoding="utf-8")
+    required_idle_power_markers = (
+        "const int poll_timeout_ms = max_runtime_ms == 0 ? -1 : kPollMs",
+        "poll(&descriptor, 1, poll_timeout_ms)",
+    )
+    missing_idle_power = [
+        marker for marker in required_idle_power_markers
+        if marker not in control_source
+    ]
+    if missing_idle_power or "poll(&descriptor, 1, kPollMs)" in control_source:
+        raise SystemExit(
+            "Control daemon idle-power guard failed: "
+            f"missing={missing_idle_power}"
         )
 
     resolver_source = (ROOT / "binder_ioctl_resolver.cpp").read_text(

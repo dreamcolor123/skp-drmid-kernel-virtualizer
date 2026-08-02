@@ -4,6 +4,8 @@
 
 当前稳定版：**1.1.2**
 
+性能修复候选：**1.1.3-rc2**
+
 ## 支持范围
 
 - Android API 34+
@@ -29,6 +31,9 @@ Linux 6.6 使用严格的内核版本、Binder backend、live symbol 地址和�
 - 有界 Binder correlation 锁；竞争时丢弃本次元数据并保持原调用继续
 - pending/plugin 固定表使用八路有界 LRU 回收，应用反复结束和重新启动时不会因
   遗留关联项耗尽桶位
+- Binder 全局入口在进入计数、用户内存复制和命令解析前执行严格有界 EUID 门禁；
+  核心服务 UID 直接调用原始 ioctl
+- control daemon 在生产模式下阻塞等待连接，消除空闲期间每 200 ms 的周期唤醒
 
 ## 目录
 
@@ -94,6 +99,16 @@ parser、配置、WebUI、锁和 Linux 6.6 profile Fixture 可直接运行。
 - Linux 6.6 prologue：`d503233f d10343ff a9077bfd a9086ffc`
 
 作者：斓梦语
+
+## 1.1.3-rc2 性能候选
+
+- 增加 Binder 入口快速门：保留安装进程自检、当前目标 EUID 和普通 Android
+  应用 UID；其他核心服务 UID 在触碰计数器、用户 header、事件环和关联表前旁路；
+- 目标 EUID 集合仍按活动 runtime slot 热切换，无需重装 Hook；
+- 将 Android 应用 UID 下限 `10000` 先装载到寄存器再比较，修复 rc1 使用
+  AArch64 `CMP-immediate` 时的 `InvalidImmediate`；
+- 生产 control socket 使用无限期阻塞 `poll`，有连接或信号时才唤醒；
+- Kernel Context ABI 更新为 17，总大小保持 97,704 bytes。
 
 ## 1.1.2 更新
 

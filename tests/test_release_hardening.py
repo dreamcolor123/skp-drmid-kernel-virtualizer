@@ -7,7 +7,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SDK_STATIC = ROOT.parent / "kernel_module_kit" / "lib" / "libkernel_module_kit_static.a"
-EXPECTED_VERSION = "1.1.2"
+EXPECTED_VERSION = "1.1.3-rc2"
 EXPECTED_DISPLAY_NAME = "虚拟化DRM ID"
 EXPECTED_AUTHOR = "斓梦语"
 EXPECTED_SDK_SHA256 = "9144ddc36c7ebe2bd524bc38d279c82c14d0f162cc195fcbe98f19882eab71d2"
@@ -46,6 +46,12 @@ RESTART_RECLAIM_RC1_ZIP = ROOT / "dist" / (
 )
 RELEASE_112_ZIP = ROOT / "dist" / (
     "module_drmid_kernel_virtualizer-1.1.2-arm64-run-once.zip"
+)
+PERFORMANCE_RC1_ZIP = ROOT / "dist" / (
+    "module_drmid_kernel_virtualizer-1.1.3-rc1-arm64-run-once.zip"
+)
+PERFORMANCE_RC2_ZIP = ROOT / "dist" / (
+    "module_drmid_kernel_virtualizer-1.1.3-rc2-arm64-run-once.zip"
 )
 NATIVECHECK_NONINTERFERENCE_MARKERS = (
     b"persist.sys.spoof",
@@ -132,6 +138,7 @@ class ReleaseHardeningTest(unittest.TestCase):
             RC26_ZIP, RC27_ZIP, RELEASE_ZIP,
             KERNEL66_RC1_ZIP, KERNEL66_RELEASE_ZIP,
             RESTART_RECLAIM_RC1_ZIP, RELEASE_112_ZIP,
+            PERFORMANCE_RC1_ZIP, PERFORMANCE_RC2_ZIP,
         ) if candidate.is_file())
         if not candidates:
             self.skipTest("historical release ZIPs are not part of the source repository")
@@ -228,6 +235,25 @@ class ReleaseHardeningTest(unittest.TestCase):
             "miss/overflow/reclaim/oneway=",
             "map insert/reuse/reclaim/active=",
             "Binder parser hook installed context=%p abi=%",
+            "Binder entry gate=installer-tgid,target-euid,",
+        ):
+            self.assertIn(marker, source)
+
+    def test_packager_guards_binder_entry_performance_gate(self):
+        source = (ROOT / "package.py").read_text(encoding="utf-8")
+        for marker in (
+            "emit_package_uid_or_target_gate",
+            "kAndroidAppUidStart = 10000",
+            "aarch64_asm_mov_w(a, w12, kAndroidAppUidStart)",
+            "without touching counters",
+            "static_cast<uint32_t>(getpid())",
+            "app_uid_check",
+        ):
+            self.assertIn(marker, source)
+        for marker in (
+            "required_idle_power_markers",
+            "Control daemon idle-power guard failed",
+            "poll_timeout_ms = max_runtime_ms == 0 ? -1 : kPollMs",
         ):
             self.assertIn(marker, source)
 

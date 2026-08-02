@@ -209,7 +209,11 @@ KModErr run_control_socket_server(const CounterHookSession& session,
            (max_runtime_ms == 0 || elapsed_ms < max_runtime_ms)) {
         constexpr int kPollMs = 200;
         pollfd descriptor{server_fd, POLLIN, 0};
-        const int poll_result = poll(&descriptor, 1, kPollMs);
+        // Production uses an unlimited lifetime. Block until a client or
+        // signal instead of waking the daemon five times per second forever;
+        // bounded fixture runs retain the 200 ms accounting interval.
+        const int poll_timeout_ms = max_runtime_ms == 0 ? -1 : kPollMs;
+        const int poll_result = poll(&descriptor, 1, poll_timeout_ms);
         if (poll_result < 0) {
             if (errno == EINTR) continue;
             server_result = KModErr::ERR_MODULE_SOCKET;

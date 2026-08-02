@@ -10,6 +10,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CONTROL = (ROOT / "control_ipc.cpp").read_text(encoding="utf-8")
 IPC_MAGIC = 0x36314350494D5244
 IPC_VERSION = 2
 REQUEST_FORMAT = "<QIIQII"
@@ -50,6 +51,14 @@ def response() -> bytes:
 
 
 class ControlIpcTest(unittest.TestCase):
+    def test_production_control_socket_blocks_instead_of_periodic_wakeup(self):
+        self.assertIn(
+            "const int poll_timeout_ms = max_runtime_ms == 0 ? -1 : kPollMs",
+            CONTROL,
+        )
+        self.assertIn("poll(&descriptor, 1, poll_timeout_ms)", CONTROL)
+        self.assertNotIn("poll(&descriptor, 1, kPollMs)", CONTROL)
+
     def test_request_is_fixed_32_bytes(self) -> None:
         self.assertEqual(struct.calcsize(REQUEST_FORMAT), 32)
         self.assertEqual(len(request(1)), 32)

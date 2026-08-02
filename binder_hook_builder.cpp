@@ -65,6 +65,7 @@ static_assert((kPluginBucketCount & (kPluginBucketCount - 1)) == 0);
 static_assert(kPluginBucketWays == 8);
 constexpr uint32_t kPluginBucketWayShift = 3;
 constexpr uint32_t kMapLockTryCount = 8;
+constexpr uint32_t kAndroidAppUidStart = 10000;
 
 // Stack-local layout used by the generated handler. All fields are 64-bit;
 // kLocalHeader is a 48-byte binder_write_read scratch buffer.
@@ -130,6 +131,70 @@ void emit_counter_increment(Assembler* a,
                             uint64_t context_kaddr,
                             size_t member_offset) {
     emit_atomic_increment(a, context_kaddr + member_offset);
+}
+
+// binder_ioctl is a global kernel entry used by nearly every Android process.
+// Parsing every system_server/service transaction makes the diagnostic ring,
+// copy helpers and atomic counters a permanent system-wide hot path. Keep the
+// installer task for the eight-call startup self-test, keep every currently
+// selected EUID (including a package that uses a low shared system UID), and
+// keep ordinary Android application UIDs so adding a new package remains a
+// hot configuration change. Core service UIDs that satisfy none of those
+// conditions jump directly to the original ioctl without touching counters,
+// user headers, command streams, maps or the event ring.
+void emit_package_uid_or_target_gate(
+    Assembler* a,
+    uint64_t context_kaddr,
+    const TaskIdentityOffsets& task_offsets,
+    uint32_t installer_tgid,
+    Label tracked,
+    Label bypass) {
+    kernel_module::export_symbol::get_current(a, x9);
+    a->cbz(x9, bypass);
+    a->ldr(w10, ptr(x9, task_offsets.tgid));
+    aarch64_asm_mov_w(a, w12, installer_tgid);
+    a->cmp(w10, w12);
+    a->b(CondCode::kEQ, tracked);
+
+    a->ldr(x10, ptr(x9, task_offsets.cred));
+    a->cbz(x10, bypass);
+    a->ldr(w11, ptr(x10, task_offsets.cred_euid));
+
+    aarch64_asm_mov_x(
+        a,
+        x12,
+        context_kaddr + offsetof(KernelCounterContext, active_config_slot));
+    a->ldar(w13, ptr(x12));
+    a->and_(w13, w13, 1);
+    aarch64_asm_mov_x(a, x14, sizeof(RuntimeConfigSlot));
+    a->mul(x13, x13, x14);
+    aarch64_asm_mov_x(
+        a,
+        x14,
+        context_kaddr + offsetof(KernelCounterContext, config_slots));
+    a->add(x13, x14, x13);
+    a->ldr(w15, ptr(x13, offsetof(RuntimeConfigSlot, target_count)));
+    a->cmp(w15, static_cast<uint32_t>(kRuntimeTargetLimit));
+    a->b(CondCode::kHI, bypass);
+    a->add(x16, x13, offsetof(RuntimeConfigSlot, target_euids));
+    const Label app_uid_check = a->newLabel();
+    for (uint32_t index = 0; index < kRuntimeTargetLimit; ++index) {
+        a->cmp(w15, index + 1);
+        a->b(CondCode::kLO, app_uid_check);
+        a->ldr(w17, ptr(x16, index * sizeof(uint32_t)));
+        a->cmp(w11, w17);
+        a->b(CondCode::kEQ, tracked);
+    }
+
+    a->bind(app_uid_check);
+    // AArch64 CMP-immediate accepts a 12-bit value (optionally shifted by
+    // 12). 10000 is outside that encoding and AsmJit correctly rejects the
+    // direct form on-device. Materialize the threshold in a scratch register
+    // so this final gate remains valid for every supported SDK assembler.
+    aarch64_asm_mov_w(a, w12, kAndroidAppUidStart);
+    a->cmp(w11, w12);
+    a->b(CondCode::kHS, tracked);
+    a->b(bypass);
 }
 
 // Acquires the active slot once for the current parsed transaction and keeps
@@ -2009,6 +2074,24 @@ KModErr build_readonly_parser_handler(uint64_t context_kaddr,
 
     kernel_module::arm64_before_hook_start(a);
 
+    const Label tracked = a->newLabel();
+    const Label bypass = a->newLabel();
+    const Label finish = a->newLabel();
+    emit_package_uid_or_target_gate(
+        a,
+        context_kaddr,
+        task_offsets,
+        static_cast<uint32_t>(getpid()),
+        tracked,
+        bypass);
+
+    a->bind(bypass);
+    // Fast path: original x0/x1/x2 arguments were never modified by the gate.
+    kernel_module::arm64_emit_call_original(a);
+    a->b(finish);
+
+    a->bind(tracked);
+
     emit_counter_increment(
         a, context_kaddr, offsetof(KernelCounterContext, active_calls));
     emit_counter_increment(
@@ -2179,6 +2262,7 @@ KModErr build_readonly_parser_handler(uint64_t context_kaddr,
             context_kaddr + offsetof(KernelCounterContext, active_calls));
     }
 
+    a->bind(finish);
     kernel_module::arm64_before_hook_end(a, false);
 
     if (asm_ctx.has_error()) {
