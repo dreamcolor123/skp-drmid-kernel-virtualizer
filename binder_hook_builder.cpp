@@ -17,6 +17,7 @@ namespace {
 
 constexpr uint64_t kMaxParsedStreamBytes = 64 * 1024;
 constexpr uint64_t kMaxParsedCommands = 128;
+constexpr uint32_t kGetPropertyByteArrayTransactionCode = 11;
 constexpr uint64_t kPendingBucketCount =
     kPendingSlotCapacity / kPendingBucketWays;
 static_assert((kPendingBucketWays & (kPendingBucketWays - 1)) == 0);
@@ -35,37 +36,16 @@ constexpr uint32_t kReplyStatusScratchOffset = 360;
 constexpr uint32_t kReplyArrayLengthScratchOffset = 364;
 constexpr uint32_t kReplyArrayOffsetScratchOffset = 368;
 constexpr uint32_t kReplyFlagsScratchOffset = 372;
-constexpr uint32_t kPinnedPagesScratchOffset = 384;
-constexpr uint32_t kPinnedPageCountScratchOffset = 400;
-constexpr uint32_t kPinnedPageResultScratchOffset = 404;
 constexpr uint32_t kBinderFileScratchOffset = 408;
-constexpr uint32_t kFactoryUuidOffsetScratchOffset = 416;
-constexpr uint32_t kPluginHandleScratchOffset = 420;
-constexpr uint32_t kReplyObjectOffsetScratchOffset = 424;
 constexpr uint32_t kParcelTokenHeaderExtraScratchOffset = 428;
 constexpr uint32_t kRuntimeConfigPointerScratchOffset = 432;
+constexpr uint32_t kHalIdentityGenerationScratchOffset = 440;
 constexpr uint32_t kParserScratchBytes = 448;
-
-struct DirectPageMapProfile {
-    uint64_t vmemmap = 0;
-    uint64_t phys_offset = 0;
-    uint64_t linear_map_base = 0;
-    uint32_t struct_page_size = 0;
-    uint32_t page_size = 0;
-    uint32_t page_shift = 0;
-};
 
 static_assert((kTransactionEventCapacity &
                (kTransactionEventCapacity - 1)) == 0);
 static_assert((kPendingBucketCount & (kPendingBucketCount - 1)) == 0);
-constexpr uint64_t kPluginBucketCount =
-    kPluginSlotCapacity / kPluginBucketWays;
-static_assert((kPluginBucketWays & (kPluginBucketWays - 1)) == 0);
-static_assert((kPluginBucketCount & (kPluginBucketCount - 1)) == 0);
-static_assert(kPluginBucketWays == 8);
-constexpr uint32_t kPluginBucketWayShift = 3;
 constexpr uint32_t kMapLockTryCount = 8;
-constexpr uint32_t kAndroidAppUidStart = 10000;
 
 // Stack-local layout used by the generated handler. All fields are 64-bit;
 // kLocalHeader is a 48-byte binder_write_read scratch buffer.
@@ -74,10 +54,11 @@ constexpr int32_t kLocalCmd = 8;
 constexpr int32_t kLocalArg = 16;
 constexpr int32_t kLocalReturn = 24;
 constexpr int32_t kLocalWriteSize = 32;
-constexpr int32_t kLocalWriteBuffer = 40;
-constexpr int32_t kLocalReadSize = 48;
-constexpr int32_t kLocalReadBuffer = 56;
-constexpr int32_t kLocalPreHeaderValid = 64;
+constexpr int32_t kLocalWriteConsumed = 40;
+constexpr int32_t kLocalWriteBuffer = 48;
+constexpr int32_t kLocalReadSize = 56;
+constexpr int32_t kLocalReadBuffer = 64;
+constexpr int32_t kLocalPreHeaderValid = 72;
 constexpr int32_t kLocalHeader = 80;
 constexpr int32_t kLocalBytes = 128;
 
@@ -90,19 +71,24 @@ static_assert(offsetof(binder_write_read, read_consumed) == 32);
 static_assert(offsetof(binder_write_read, read_buffer) == 40);
 static_assert(sizeof(binder_transaction_data) == 64);
 
-bool validate_runtime_targets(const ReplacementConfig& config) {
-    if (config.rule_mode > 2 || config.target_count > kRuntimeTargetLimit) {
+bool validate_runtime_config(const ReplacementConfig& config) {
+    return config.config_generation != 0 && config.seed_generation != 0 &&
+           config.profile_fingerprint != 0 &&
+           static_cast<uint32_t>(config.mode) <=
+               static_cast<uint32_t>(ReplacementMode::kWriteTest) &&
+           config.virtual_id_length == kWidevineDeviceUniqueIdBytes;
+}
+
+bool validate_hal_identities(const HalIdentityConfig& identities) {
+    if (identities.generation == 0 ||
+        identities.count > kHalIdentityLimit) {
         return false;
     }
-    if ((config.rule_mode == 0 && config.target_count != 0) ||
-        (config.rule_mode != 0 && config.target_count == 0)) {
-        return false;
-    }
-    for (size_t index = 0; index < kRuntimeTargetLimit; ++index) {
-        const uint32_t value = config.target_euids[index];
-        if (index < config.target_count) {
+    for (size_t index = 0; index < kHalIdentityLimit; ++index) {
+        const uint32_t value = identities.tgids[index];
+        if (index < identities.count) {
             if (value == 0 ||
-                (index != 0 && config.target_euids[index - 1] >= value)) {
+                (index != 0 && identities.tgids[index - 1] >= value)) {
                 return false;
             }
         } else if (value != 0) {
@@ -133,16 +119,10 @@ void emit_counter_increment(Assembler* a,
     emit_atomic_increment(a, context_kaddr + member_offset);
 }
 
-// binder_ioctl is a global kernel entry used by nearly every Android process.
-// Parsing every system_server/service transaction makes the diagnostic ring,
-// copy helpers and atomic counters a permanent system-wide hot path. Keep the
-// installer task for the eight-call startup self-test, keep every currently
-// selected EUID (including a package that uses a low shared system UID), and
-// keep ordinary Android application UIDs so adding a new package remains a
-// hot configuration change. Core service UIDs that satisfy none of those
-// conditions jump directly to the original ioctl without touching counters,
-// user headers, command streams, maps or the event ring.
-void emit_package_uid_or_target_gate(
+// Only the installer self-test and the internally discovered Widevine HAL
+// enter the parser. Every other Binder caller bypasses before counters, stack
+// allocation, user copies and command-stream parsing.
+void emit_hal_identity_gate(
     Assembler* a,
     uint64_t context_kaddr,
     const TaskIdentityOffsets& task_offsets,
@@ -156,44 +136,31 @@ void emit_package_uid_or_target_gate(
     a->cmp(w10, w12);
     a->b(CondCode::kEQ, tracked);
 
-    a->ldr(x10, ptr(x9, task_offsets.cred));
-    a->cbz(x10, bypass);
-    a->ldr(w11, ptr(x10, task_offsets.cred_euid));
-
     aarch64_asm_mov_x(
         a,
         x12,
-        context_kaddr + offsetof(KernelCounterContext, active_config_slot));
+        context_kaddr +
+            offsetof(KernelCounterContext, active_hal_identity_slot));
     a->ldar(w13, ptr(x12));
     a->and_(w13, w13, 1);
-    aarch64_asm_mov_x(a, x14, sizeof(RuntimeConfigSlot));
+    aarch64_asm_mov_x(a, x14, sizeof(HalIdentitySet));
     a->mul(x13, x13, x14);
     aarch64_asm_mov_x(
         a,
         x14,
-        context_kaddr + offsetof(KernelCounterContext, config_slots));
+        context_kaddr + offsetof(KernelCounterContext, hal_identity_slots));
     a->add(x13, x14, x13);
-    a->ldr(w15, ptr(x13, offsetof(RuntimeConfigSlot, target_count)));
-    a->cmp(w15, static_cast<uint32_t>(kRuntimeTargetLimit));
+    a->ldr(w15, ptr(x13, offsetof(HalIdentitySet, count)));
+    a->cmp(w15, static_cast<uint32_t>(kHalIdentityLimit));
     a->b(CondCode::kHI, bypass);
-    a->add(x16, x13, offsetof(RuntimeConfigSlot, target_euids));
-    const Label app_uid_check = a->newLabel();
-    for (uint32_t index = 0; index < kRuntimeTargetLimit; ++index) {
+    a->add(x16, x13, offsetof(HalIdentitySet, tgids));
+    for (uint32_t index = 0; index < kHalIdentityLimit; ++index) {
         a->cmp(w15, index + 1);
-        a->b(CondCode::kLO, app_uid_check);
+        a->b(CondCode::kLO, bypass);
         a->ldr(w17, ptr(x16, index * sizeof(uint32_t)));
-        a->cmp(w11, w17);
+        a->cmp(w10, w17);
         a->b(CondCode::kEQ, tracked);
     }
-
-    a->bind(app_uid_check);
-    // AArch64 CMP-immediate accepts a 12-bit value (optionally shifted by
-    // 12). 10000 is outside that encoding and AsmJit correctly rejects the
-    // direct form on-device. Materialize the threshold in a scratch register
-    // so this final gate remains valid for every supported SDK assembler.
-    aarch64_asm_mov_w(a, w12, kAndroidAppUidStart);
-    a->cmp(w11, w12);
-    a->b(CondCode::kHS, tracked);
     a->b(bypass);
 }
 
@@ -219,53 +186,24 @@ void emit_capture_active_runtime_config(Assembler* a,
     a->str(x10, ptr(x23, kRuntimeConfigPointerScratchOffset));
 }
 
-KModErr resolve_direct_page_map_profile(DirectPageMapProfile& profile) {
-    profile = {};
-    RETURN_IF_ERROR(
-        kernel_module::export_symbol::get_vmemmap(profile.vmemmap));
-    RETURN_IF_ERROR(
-        kernel_module::get_struct_page_size(profile.struct_page_size));
-    RETURN_IF_ERROR(
-        kernel_module::export_symbol::get_PHYS_OFFSET(profile.phys_offset));
-    RETURN_IF_ERROR(kernel_module::export_symbol::phys_to_virt(
-        profile.phys_offset, profile.linear_map_base));
-    profile.page_size = kernel_module::get_page_size();
-    if (profile.vmemmap == 0 || profile.struct_page_size == 0 ||
-        profile.phys_offset == 0 || profile.linear_map_base == 0 ||
-        profile.page_size < 4096 || profile.page_size > 65536 ||
-        (profile.page_size & (profile.page_size - 1)) != 0) {
-        profile = {};
-        return KModErr::ERR_MODULE_OFFSET_NOT_FOUND;
-    }
-    uint32_t value = profile.page_size;
-    while ((value >>= 1) != 0) {
-        ++profile.page_shift;
-    }
-    return KModErr::OK;
-}
-
-void emit_call_kernel_symbol_one_arg(Assembler* a,
-                                     KModErr& out_err,
-                                     const char* symbol,
-                                     GpX arg) {
-    out_err = Aarch64KernelSymCallHelper::callNameAuto(
+void emit_capture_active_hal_generation(Assembler* a,
+                                        uint64_t context_kaddr) {
+    aarch64_asm_mov_x(
         a,
-        symbol,
-        Aarch64KernelSymCallHelper::NeedReturnX0::No,
-        arg);
-}
-
-void emit_call_kernel_symbol_two_args(Assembler* a,
-                                      KModErr& out_err,
-                                      const char* symbol,
-                                      GpX arg0,
-                                      GpX arg1) {
-    out_err = Aarch64KernelSymCallHelper::callNameAuto(
+        x9,
+        context_kaddr +
+            offsetof(KernelCounterContext, active_hal_identity_slot));
+    a->ldar(w10, ptr(x9));
+    a->and_(w10, w10, 1);
+    aarch64_asm_mov_x(a, x11, sizeof(HalIdentitySet));
+    a->mul(x10, x10, x11);
+    aarch64_asm_mov_x(
         a,
-        symbol,
-        Aarch64KernelSymCallHelper::NeedReturnX0::No,
-        arg0,
-        arg1);
+        x11,
+        context_kaddr + offsetof(KernelCounterContext, hal_identity_slots));
+    a->add(x10, x11, x10);
+    a->ldr(x11, ptr(x10, offsetof(HalIdentitySet, generation)));
+    a->str(x11, ptr(x23, kHalIdentityGenerationScratchOffset));
 }
 
 // x21 contains the correlated request event id and x23 the parser scratch.
@@ -343,259 +281,6 @@ void emit_pending_lock_release(Assembler* a, uint64_t context_kaddr) {
         a,
         context_kaddr,
         offsetof(KernelCounterContext, pending_lock_state));
-}
-
-void emit_plugin_lock_acquire(Assembler* a,
-                              uint64_t context_kaddr,
-                              Label failure) {
-    emit_bounded_lock_acquire(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, plugin_lock_state),
-        offsetof(KernelCounterContext, plugin_lock_drops),
-        failure);
-}
-
-void emit_plugin_lock_release(Assembler* a, uint64_t context_kaddr) {
-    emit_bounded_lock_release(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, plugin_lock_state));
-}
-
-// x27=current task, x21=create request event id, parser scratch contains the
-// Binder file and parsed handle.
-void emit_plugin_map_register(Assembler* a,
-                              uint64_t context_kaddr,
-                              const TaskIdentityOffsets& task_offsets) {
-    const Label found = a->newLabel();
-    const Label use_empty = a->newLabel();
-    const Label write = a->newLabel();
-    const Label release = a->newLabel();
-    const Label done = a->newLabel();
-
-    emit_plugin_lock_acquire(a, context_kaddr, done);
-    a->ldr(x12, ptr(x23, kBinderFileScratchOffset));
-    a->ldr(w13, ptr(x27, task_offsets.tgid));
-    a->ldr(w14, ptr(x23, kPluginHandleScratchOffset));
-    a->lsr(x15, x12, 6);
-    a->eor(x15, x15, x13);
-    a->eor(x15, x15, x14);
-    a->and_(x15, x15, kPluginBucketCount - 1);
-    a->lsl(x15, x15, kPluginBucketWayShift);
-    aarch64_asm_mov_x(a, x9, sizeof(BinderPluginSlot));
-    a->mul(x15, x15, x9);
-    aarch64_asm_mov_x(
-        a,
-        x16,
-        context_kaddr + offsetof(KernelCounterContext, plugins));
-    a->add(x16, x16, x15);
-    a->mov(x11, xzr); // first empty slot
-    a->mov(x10, xzr); // least-recently-used occupied slot
-    aarch64_asm_mov_x(a, x17, UINT64_MAX); // oldest event id
-
-    for (size_t way = 0; way < kPluginBucketWays; ++way) {
-        const Label next = a->newLabel();
-        const Label remember_empty = a->newLabel();
-        const Label remember_oldest = a->newLabel();
-        a->ldr(x9, ptr(x16, offsetof(BinderPluginSlot, binder_file)));
-        a->cbz(x9, remember_empty);
-        a->cmp(x9, x12);
-        const Label consider_oldest = a->newLabel();
-        a->b(CondCode::kNE, consider_oldest);
-        a->ldr(w9, ptr(x16, offsetof(BinderPluginSlot, owner_tgid)));
-        a->cmp(w9, w13);
-        a->b(CondCode::kNE, consider_oldest);
-        a->ldr(w9, ptr(x16, offsetof(BinderPluginSlot, handle)));
-        a->cmp(w9, w14);
-        a->b(CondCode::kEQ, found);
-        a->bind(consider_oldest);
-        a->ldr(x9, ptr(x16, offsetof(BinderPluginSlot, registered_event_id)));
-        a->cbz(x10, remember_oldest);
-        a->cmp(x9, x17);
-        a->b(CondCode::kHS, next);
-        a->bind(remember_oldest);
-        a->mov(x10, x16);
-        a->mov(x17, x9);
-        a->b(next);
-        a->bind(remember_empty);
-        a->cbnz(x11, next);
-        a->mov(x11, x16);
-        a->bind(next);
-        if (way + 1 < kPluginBucketWays) {
-            a->add(x16, x16, sizeof(BinderPluginSlot));
-        }
-    }
-    a->cbnz(x11, use_empty);
-    // A client can be killed without sending BC_RELEASE. Never let those
-    // stale keys make a later Widevine registration fail: replace the least
-    // recently used entry in this bounded bucket. plugin_map_collisions now
-    // counts recovered collision/eviction events; active stays at capacity.
-    a->mov(x16, x10);
-    aarch64_asm_mov_w(a, w15, 0); // replacement, not a new active slot
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, plugin_map_collisions));
-    a->b(write);
-
-    a->bind(use_empty);
-    a->mov(x16, x11);
-    aarch64_asm_mov_w(a, w15, 1); // newly active slot
-    a->b(write);
-
-    a->bind(found);
-    a->str(x21, ptr(x16, offsetof(BinderPluginSlot, registered_event_id)));
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, plugin_map_reuses));
-    a->b(release);
-
-    a->bind(write);
-    a->str(x21, ptr(x16, offsetof(BinderPluginSlot, registered_event_id)));
-    a->str(w13, ptr(x16, offsetof(BinderPluginSlot, owner_tgid)));
-    a->str(w14, ptr(x16, offsetof(BinderPluginSlot, handle)));
-    emit_capture_active_runtime_config(a, context_kaddr);
-    a->ldr(x9, ptr(x23, kRuntimeConfigPointerScratchOffset));
-    a->ldr(w9, ptr(x9, offsetof(RuntimeConfigSlot, config_generation)));
-    a->str(w9, ptr(x16, offsetof(BinderPluginSlot, generation)));
-    a->stlr(x12, ptr(x16, offsetof(BinderPluginSlot, binder_file)));
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, plugin_map_inserts));
-    a->cbz(w15, release);
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, plugin_map_active));
-    a->b(release);
-    a->bind(release);
-    emit_plugin_lock_release(a, context_kaddr);
-    a->bind(done);
-}
-
-// Marks a deviceUniqueId request when its target handle belongs to a
-// registered Widevine plugin for this client process and Binder file.
-void emit_plugin_map_classify_request(
-    Assembler* a,
-    uint64_t context_kaddr,
-    const TaskIdentityOffsets& task_offsets) {
-    const Label found = a->newLabel();
-    const Label miss = a->newLabel();
-    const Label release = a->newLabel();
-    const Label done = a->newLabel();
-
-    a->ldr(w11, ptr(x23, kParcelFlagsScratchOffset));
-    a->tbz(x11, 0, done);
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, plugin_map_lookups));
-    emit_plugin_lock_acquire(a, context_kaddr, done);
-    a->ldr(x12, ptr(x23, kBinderFileScratchOffset));
-    a->ldr(w13, ptr(x27, task_offsets.tgid));
-    a->ldr(w14, ptr(x23, kTransactionScratchOffset));
-    a->str(w14, ptr(x23, kPluginHandleScratchOffset));
-    a->lsr(x15, x12, 6);
-    a->eor(x15, x15, x13);
-    a->eor(x15, x15, x14);
-    a->and_(x15, x15, kPluginBucketCount - 1);
-    a->lsl(x15, x15, kPluginBucketWayShift);
-    aarch64_asm_mov_x(a, x9, sizeof(BinderPluginSlot));
-    a->mul(x15, x15, x9);
-    aarch64_asm_mov_x(
-        a,
-        x16,
-        context_kaddr + offsetof(KernelCounterContext, plugins));
-    a->add(x16, x16, x15);
-    for (size_t way = 0; way < kPluginBucketWays; ++way) {
-        const Label next = a->newLabel();
-        a->ldr(x9, ptr(x16, offsetof(BinderPluginSlot, binder_file)));
-        a->cmp(x9, x12);
-        a->b(CondCode::kNE, next);
-        a->ldr(w9, ptr(x16, offsetof(BinderPluginSlot, owner_tgid)));
-        a->cmp(w9, w13);
-        a->b(CondCode::kNE, next);
-        a->ldr(w9, ptr(x16, offsetof(BinderPluginSlot, handle)));
-        a->cmp(w9, w14);
-        a->b(CondCode::kEQ, found);
-        a->bind(next);
-        if (way + 1 < kPluginBucketWays) {
-            a->add(x16, x16, sizeof(BinderPluginSlot));
-        }
-    }
-    a->b(miss);
-
-    a->bind(found);
-    // Refresh the entry age only after an exact file/tgid/handle hit. This
-    // keeps an actively used plugin ahead of abandoned process entries when
-    // a later registration needs bounded LRU reclamation.
-    aarch64_asm_mov_x(
-        a, x9, context_kaddr + offsetof(KernelCounterContext, event_write_index));
-    a->ldr(x10, ptr(x9));
-    a->str(x10, ptr(x16, offsetof(BinderPluginSlot, registered_event_id)));
-    a->ldr(w11, ptr(x23, kParcelFlagsScratchOffset));
-    a->orr(w11, w11, kParcelFlagWidevinePluginMatched);
-    a->str(w11, ptr(x23, kParcelFlagsScratchOffset));
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, plugin_map_hits));
-    a->b(release);
-    a->bind(miss);
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, plugin_map_misses));
-    a->bind(release);
-    emit_plugin_lock_release(a, context_kaddr);
-    a->bind(done);
-}
-
-// x27=current task, parser scratch contains Binder file and released handle.
-void emit_plugin_map_release(Assembler* a,
-                             uint64_t context_kaddr,
-                             const TaskIdentityOffsets& task_offsets) {
-    const Label found = a->newLabel();
-    const Label miss = a->newLabel();
-    const Label release = a->newLabel();
-    const Label done = a->newLabel();
-    emit_plugin_lock_acquire(a, context_kaddr, done);
-    a->ldr(x12, ptr(x23, kBinderFileScratchOffset));
-    a->ldr(w13, ptr(x27, task_offsets.tgid));
-    a->ldr(w14, ptr(x23, kPluginHandleScratchOffset));
-    a->lsr(x15, x12, 6);
-    a->eor(x15, x15, x13);
-    a->eor(x15, x15, x14);
-    a->and_(x15, x15, kPluginBucketCount - 1);
-    a->lsl(x15, x15, kPluginBucketWayShift);
-    aarch64_asm_mov_x(a, x9, sizeof(BinderPluginSlot));
-    a->mul(x15, x15, x9);
-    aarch64_asm_mov_x(
-        a,
-        x16,
-        context_kaddr + offsetof(KernelCounterContext, plugins));
-    a->add(x16, x16, x15);
-    for (size_t way = 0; way < kPluginBucketWays; ++way) {
-        const Label next = a->newLabel();
-        a->ldr(x9, ptr(x16, offsetof(BinderPluginSlot, binder_file)));
-        a->cmp(x9, x12);
-        a->b(CondCode::kNE, next);
-        a->ldr(w9, ptr(x16, offsetof(BinderPluginSlot, owner_tgid)));
-        a->cmp(w9, w13);
-        a->b(CondCode::kNE, next);
-        a->ldr(w9, ptr(x16, offsetof(BinderPluginSlot, handle)));
-        a->cmp(w9, w14);
-        a->b(CondCode::kEQ, found);
-        a->bind(next);
-        if (way + 1 < kPluginBucketWays) {
-            a->add(x16, x16, sizeof(BinderPluginSlot));
-        }
-    }
-    a->b(miss);
-    a->bind(found);
-    a->stlr(xzr, ptr(x16, offsetof(BinderPluginSlot, binder_file)));
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, plugin_map_releases));
-    emit_atomic_decrement(
-        a, context_kaddr + offsetof(KernelCounterContext, plugin_map_active));
-    a->b(release);
-    a->bind(miss);
-    emit_counter_increment(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, plugin_map_release_misses));
-    a->bind(release);
-    emit_plugin_lock_release(a, context_kaddr);
-    a->bind(done);
 }
 
 // x27: current task, x26: request event id, x23: parser scratch.
@@ -717,6 +402,10 @@ void emit_pending_push(Assembler* a,
     a->str(x16, ptr(x14, offsetof(BinderPendingFrame, target)));
     a->ldr(x16, ptr(x23, kTransactionScratchOffset + 32));
     a->str(x16, ptr(x14, offsetof(BinderPendingFrame, data_size)));
+    emit_capture_active_hal_generation(a, context_kaddr);
+    a->ldr(x16, ptr(x23, kHalIdentityGenerationScratchOffset));
+    a->str(x16,
+           ptr(x14, offsetof(BinderPendingFrame, hal_identity_generation)));
     a->ldr(w16, ptr(x23, kTransactionScratchOffset + 16));
     a->str(w16, ptr(x14, offsetof(BinderPendingFrame, code)));
     a->ldr(w16, ptr(x23, kTransactionScratchOffset + 20));
@@ -790,6 +479,20 @@ void emit_pending_pop(Assembler* a,
     a->add(x14, x15, x14);
     a->ldr(x21, ptr(x14, offsetof(BinderPendingFrame, request_event_id)));
     a->ldr(w17, ptr(x14, offsetof(BinderPendingFrame, parcel_flags)));
+    const Label generation_ready = a->newLabel();
+    emit_capture_active_hal_generation(a, context_kaddr);
+    a->ldr(x9, ptr(x23, kHalIdentityGenerationScratchOffset));
+    a->ldr(x10,
+           ptr(x14, offsetof(BinderPendingFrame, hal_identity_generation)));
+    a->cmp(x9, x10);
+    a->b(CondCode::kEQ, generation_ready);
+    a->mov(x21, xzr);
+    a->mov(x17, xzr);
+    emit_counter_increment(
+        a,
+        context_kaddr,
+        offsetof(KernelCounterContext, pending_generation_stale));
+    a->bind(generation_ready);
     a->cbnz(x13, release);
     // No frame remains; make this slot reusable before releasing the lock.
     a->stlr(xzr, ptr(x15));
@@ -1015,48 +718,11 @@ void emit_try_parcel_descriptor(Assembler* a,
         a->str(w11, ptr(x23, kParcelTokenOffsetScratchOffset));
         emit_counter_increment(a, context_kaddr, hit_counter_offset);
 
-        if (token_kind == ParcelTokenKind::kDrmFactory) {
-            static constexpr uint8_t kWidevineUuid[16] = {
-                0xed, 0xef, 0x8b, 0xa9, 0x79, 0xd6, 0x4a, 0xce,
-                0xa3, 0xc8, 0x27, 0xdc, 0xd5, 0x1d, 0x21, 0xed,
-            };
-            const Label factory_done = a->newLabel();
-            a->ldr(w11, ptr(x23, kTransactionScratchOffset + 16));
-            a->cmp(w11, 1); // IDrmFactory.createDrmPlugin
-            a->b(CondCode::kNE, factory_done);
-            const uint32_t argument_start = align4(
-                token_offset + sizeof(uint32_t) +
-                static_cast<uint32_t>(
-                    (descriptor.size() + 1) * sizeof(char16_t)));
-            for (uint32_t uuid_offset = argument_start;
-                 uuid_offset <= argument_start + 68;
-                 uuid_offset += 4) {
-                const Label next_uuid = a->newLabel();
-                a->cmp(x17, uuid_offset + sizeof(kWidevineUuid));
-                a->b(CondCode::kLO, next_uuid);
-                for (size_t byte = 0; byte < sizeof(kWidevineUuid); ++byte) {
-                    a->ldrb(
-                        w11,
-                        ptr(x23,
-                            kParcelPrefixScratchOffset + uuid_offset + byte));
-                    a->cmp(w11, kWidevineUuid[byte]);
-                    a->b(CondCode::kNE, next_uuid);
-                }
-                a->ldr(w11, ptr(x23, kParcelFlagsScratchOffset));
-                a->orr(w11, w11, kParcelFlagWidevineCreate);
-                a->str(w11, ptr(x23, kParcelFlagsScratchOffset));
-                aarch64_asm_mov_w(a, w11, uuid_offset);
-                a->str(w11, ptr(x23, kFactoryUuidOffsetScratchOffset));
-                emit_counter_increment(
-                    a,
-                    context_kaddr,
-                    offsetof(KernelCounterContext, widevine_create_requests));
-                a->b(factory_done);
-                a->bind(next_uuid);
-            }
-            a->bind(factory_done);
-        } else if (token_kind == ParcelTokenKind::kDrmPlugin) {
+        if (token_kind == ParcelTokenKind::kDrmPlugin) {
             constexpr std::string_view kDeviceUniqueId = "deviceUniqueId";
+            a->ldr(w11, ptr(x23, kTransactionScratchOffset + 16));
+            a->cmp(w11, kGetPropertyByteArrayTransactionCode);
+            a->b(CondCode::kNE, next);
             const uint32_t property_offset = align4(
                 token_offset + sizeof(uint32_t) +
                 static_cast<uint32_t>(
@@ -1148,14 +814,26 @@ void emit_try_parcel_descriptor(Assembler* a,
     }
 }
 
+void emit_reset_transaction_parse_scratch(Assembler* a) {
+    a->str(wzr, ptr(x23, kParcelTokenKindScratchOffset));
+    a->str(wzr, ptr(x23, kParcelTokenOffsetScratchOffset));
+    a->str(wzr, ptr(x23, kParcelPrefixSizeScratchOffset));
+    a->str(wzr, ptr(x23, kParcelFlagsScratchOffset));
+    a->str(wzr, ptr(x23, kCorrelatedRequestFlagsScratchOffset));
+    a->str(wzr, ptr(x23, kReplyPrefixSizeScratchOffset));
+    a->str(wzr, ptr(x23, kReplyStatusScratchOffset));
+    a->str(wzr, ptr(x23, kReplyArrayLengthScratchOffset));
+    a->str(wzr, ptr(x23, kReplyArrayOffsetScratchOffset));
+    a->str(wzr, ptr(x23, kReplyFlagsScratchOffset));
+    a->str(wzr, ptr(x23, kParcelTokenHeaderExtraScratchOffset));
+}
+
 // Bounded, read-only Parcel prefix capture for request commands. Results are
 // kept in parser scratch and copied into the transaction event later.
 void emit_capture_parcel_prefix(Assembler* a,
                                 uint64_t context_kaddr,
                                 uint32_t expected_ioc_type,
                                 KModErr& copy_helper_err) {
-    constexpr std::string_view kDrmFactory =
-        "android.hardware.drm.IDrmFactory";
     constexpr std::string_view kDrmPlugin =
         "android.hardware.drm.IDrmPlugin";
 
@@ -1164,14 +842,6 @@ void emit_capture_parcel_prefix(Assembler* a,
     const Label scan = a->newLabel();
     const Label matched = a->newLabel();
     const Label done = a->newLabel();
-
-    a->str(wzr, ptr(x23, kParcelTokenKindScratchOffset));
-    a->str(wzr, ptr(x23, kParcelTokenOffsetScratchOffset));
-    a->str(wzr, ptr(x23, kParcelPrefixSizeScratchOffset));
-    a->str(wzr, ptr(x23, kParcelFlagsScratchOffset));
-    a->str(wzr, ptr(x23, kFactoryUuidOffsetScratchOffset));
-    a->str(wzr, ptr(x23, kPluginHandleScratchOffset));
-    a->str(wzr, ptr(x23, kParcelTokenHeaderExtraScratchOffset));
 
     auto emit_request_match = [&](uint32_t command) {
         aarch64_asm_mov_x(a, x11, command);
@@ -1218,13 +888,6 @@ void emit_capture_parcel_prefix(Assembler* a,
     emit_try_parcel_descriptor(
         a,
         context_kaddr,
-        kDrmFactory,
-        ParcelTokenKind::kDrmFactory,
-        offsetof(KernelCounterContext, parcel_factory_hits),
-        matched);
-    emit_try_parcel_descriptor(
-        a,
-        context_kaddr,
         kDrmPlugin,
         ParcelTokenKind::kDrmPlugin,
         offsetof(KernelCounterContext, parcel_plugin_hits),
@@ -1238,151 +901,21 @@ void emit_capture_parcel_prefix(Assembler* a,
     a->bind(done);
 }
 
-// Parse the nullable strong-binder object returned by a successful
-// IDrmFactory.createDrmPlugin request. The 64-bit Binder ABI carries one
-// binder_size_t offset and one 24-byte flat_binder_object in the reply.
-void emit_parse_widevine_create_reply(
-    Assembler* a,
-    uint64_t context_kaddr,
-    const TaskIdentityOffsets& task_offsets,
-    KModErr& copy_helper_err) {
-    const Label fault = a->newLabel();
-    const Label done = a->newLabel();
-    a->tbz(x17, 1, done);
-    emit_counter_increment(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, create_reply_candidates));
-
-    a->ldr(x16, ptr(x23, kTransactionScratchOffset + 32)); // data_size
-    a->ldr(x14, ptr(x23, kTransactionScratchOffset + 40)); // offsets_size
-    a->ldr(x15, ptr(x23, kTransactionScratchOffset + 48)); // buffer
-    a->ldr(x12, ptr(x23, kTransactionScratchOffset + 56)); // offsets
-    aarch64_asm_mov_x(
-        a,
-        x9,
-        context_kaddr + offsetof(KernelCounterContext, last_create_data_size));
-    a->str(x16, ptr(x9));
-    a->str(x14, ptr(x9, sizeof(uint64_t)));
-    aarch64_asm_mov_w(a, w11, 1);
-    a->str(w11, ptr(x9, 2 * sizeof(uint64_t)));
-    a->cmp(x16, sizeof(flat_binder_object));
-    a->b(CondCode::kLO, fault);
-    a->cmp(x14, sizeof(binder_size_t));
-    a->b(CondCode::kNE, fault);
-    a->cbz(x15, fault);
-    a->cbz(x12, fault);
-    aarch64_asm_mov_w(a, w11, 2);
-    a->str(w11, ptr(x9, 2 * sizeof(uint64_t)));
-
-    a->add(x13, x23, kParcelPrefixScratchOffset);
-    kernel_module::export_symbol::copy_from_user(
-        a, copy_helper_err, x13, x15, sizeof(int32_t));
-    a->cbnz(x0, fault);
-    a->ldr(w11, ptr(x23, kParcelPrefixScratchOffset));
-    a->str(w11, ptr(x23, kReplyStatusScratchOffset));
-    aarch64_asm_mov_x(
-        a,
-        x9,
-        context_kaddr + offsetof(KernelCounterContext, last_create_data_size));
-    a->str(w11, ptr(x9, 2 * sizeof(uint64_t) + sizeof(uint32_t)));
-    a->cbnz(w11, fault);
-    aarch64_asm_mov_w(a, w11, 3);
-    a->str(w11, ptr(x9, 2 * sizeof(uint64_t)));
-
-    a->add(x13, x23, kParcelPrefixScratchOffset + 8);
-    kernel_module::export_symbol::copy_from_user(
-        a, copy_helper_err, x13, x12, sizeof(binder_size_t));
-    a->cbnz(x0, fault);
-    a->ldr(x14, ptr(x23, kParcelPrefixScratchOffset + 8));
-    // AIDL status occupies four bytes, so the returned flat object is valid at
-    // offset 4 even on the 64-bit Binder ABI; binder_size_t itself stays 64-bit.
-    a->tst(x14, 3);
-    a->b(CondCode::kNE, fault);
-    a->add(x11, x14, sizeof(flat_binder_object));
-    a->cmp(x11, x16);
-    a->b(CondCode::kHI, fault);
-    a->str(w14, ptr(x23, kReplyObjectOffsetScratchOffset));
-    aarch64_asm_mov_x(
-        a,
-        x9,
-        context_kaddr + offsetof(KernelCounterContext, last_create_data_size));
-    a->str(w14, ptr(x9, 2 * sizeof(uint32_t) + 2 * sizeof(uint64_t)));
-    aarch64_asm_mov_w(a, w11, 4);
-    a->str(w11, ptr(x9, 2 * sizeof(uint64_t)));
-
-    a->add(x12, x15, x14);
-    a->add(x13, x23, kParcelPrefixScratchOffset + 16);
-    kernel_module::export_symbol::copy_from_user(
-        a, copy_helper_err, x13, x12, sizeof(flat_binder_object));
-    a->cbnz(x0, fault);
-    a->ldr(w11, ptr(x23, kParcelPrefixScratchOffset + 16));
-    a->ldr(w10, ptr(x23, kParcelPrefixScratchOffset + 24));
-    aarch64_asm_mov_x(
-        a,
-        x9,
-        context_kaddr + offsetof(KernelCounterContext, last_create_data_size));
-    a->str(w11, ptr(x9, 3 * sizeof(uint32_t) + 2 * sizeof(uint64_t)));
-    a->str(w10, ptr(x9, 4 * sizeof(uint32_t) + 2 * sizeof(uint64_t)));
-    aarch64_asm_mov_w(a, w12, 5);
-    a->str(w12, ptr(x9, 2 * sizeof(uint64_t)));
-    aarch64_asm_mov_w(a, w12, static_cast<uint32_t>(BINDER_TYPE_HANDLE));
-    a->cmp(w11, w12);
-    a->b(CondCode::kNE, fault);
-    aarch64_asm_mov_w(a, w12, 6);
-    a->str(w12, ptr(x9, 2 * sizeof(uint64_t)));
-    a->mov(w11, w10);
-    a->cbz(w11, fault);
-    a->str(w11, ptr(x23, kPluginHandleScratchOffset));
-    aarch64_asm_mov_w(a, w12, 7);
-    a->str(w12, ptr(x9, 2 * sizeof(uint64_t)));
-
-    emit_plugin_map_register(a, context_kaddr, task_offsets);
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, create_reply_ok));
-    aarch64_asm_mov_w(a, w11, sizeof(int32_t) + sizeof(flat_binder_object));
-    a->str(w11, ptr(x23, kReplyPrefixSizeScratchOffset));
-    a->ldr(w11, ptr(x23, kReplyFlagsScratchOffset));
-    aarch64_asm_mov_w(
-        a,
-        w12,
-        kReplyFlagStatusOk | kReplyFlagWidevinePluginRegistered);
-    a->orr(w11, w11, w12);
-    a->str(w11, ptr(x23, kReplyFlagsScratchOffset));
-    a->b(done);
-
-    a->bind(fault);
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, create_reply_faults));
-    a->bind(done);
-}
-
-// Parse only a BR_REPLY correlated to a deviceUniqueId request. The first
+// Parse only a HAL BC_REPLY correlated to a deviceUniqueId request. The first
 // copy reads the 8-byte successful AIDL status/byte-array header. A second
 // bounded copy proves that the reported content range is readable; bytes stay
 // in transient handler stack scratch and are never placed in the event ring.
-void emit_parse_correlated_reply(Assembler* a,
-                                 uint64_t context_kaddr,
-                                 const TaskIdentityOffsets& task_offsets,
-                                 const DirectPageMapProfile& page_map,
-                                 KModErr& copy_helper_err) {
+void emit_parse_hal_correlated_reply(Assembler* a,
+                                     uint64_t context_kaddr,
+                                     KModErr& copy_helper_err) {
+    const Label no_pending = a->newLabel();
     const Label header_fault = a->newLabel();
     const Label status_nonzero = a->newLabel();
     const Label array_invalid = a->newLabel();
     const Label content_fault = a->newLabel();
     const Label length_mismatch = a->newLabel();
-    const Label rule_match = a->newLabel();
-    const Label rule_miss = a->newLabel();
-    const Label rule_cred_fault = a->newLabel();
     const Label dry_run = a->newLabel();
-    const Label copy_to_user_fault = a->newLabel();
-    const Label access_vm_fault = a->newLabel();
-    const Label page_pin_fault = a->newLabel();
-    const Label page_pin_partial_cleanup = a->newLabel();
-    const Label page_copy_loop = a->newLabel();
-    const Label page_copy_done = a->newLabel();
-    const Label page_flush_loop = a->newLabel();
-    const Label page_flush_done = a->newLabel();
+    const Label write_fault = a->newLabel();
     const Label done = a->newLabel();
 
     a->str(w17, ptr(x23, kCorrelatedRequestFlagsScratchOffset));
@@ -1391,14 +924,20 @@ void emit_parse_correlated_reply(Assembler* a,
     a->str(wzr, ptr(x23, kReplyArrayLengthScratchOffset));
     a->str(wzr, ptr(x23, kReplyArrayOffsetScratchOffset));
     a->str(wzr, ptr(x23, kReplyFlagsScratchOffset));
+    a->cbz(x21, no_pending);
     a->tbz(x17, 0, done);
-    a->tbz(x17, 2, done);
     emit_capture_active_runtime_config(a, context_kaddr);
 
     emit_counter_increment(
         a, context_kaddr, offsetof(KernelCounterContext, reply_candidates));
-    aarch64_asm_mov_x(
-        a, x11, kReplyFlagCorrelatedDeviceUniqueId);
+    emit_counter_increment(
+        a,
+        context_kaddr,
+        offsetof(KernelCounterContext, correlated_reply_candidates));
+    aarch64_asm_mov_w(
+        a,
+        w11,
+        kReplyFlagCorrelatedDeviceUniqueId | kReplyFlagHalCorrelated);
     a->str(w11, ptr(x23, kReplyFlagsScratchOffset));
 
     a->ldr(x16, ptr(x23, kTransactionScratchOffset + 32));
@@ -1410,7 +949,7 @@ void emit_parse_correlated_reply(Assembler* a,
     kernel_module::export_symbol::copy_from_user(
         a, copy_helper_err, x13, x15, 8);
     a->cbnz(x0, header_fault);
-    aarch64_asm_mov_x(a, x11, 8);
+    aarch64_asm_mov_w(a, w11, 8);
     a->str(w11, ptr(x23, kReplyPrefixSizeScratchOffset));
     emit_counter_increment(
         a,
@@ -1424,13 +963,12 @@ void emit_parse_correlated_reply(Assembler* a,
         a, context_kaddr, offsetof(KernelCounterContext, reply_status_ok));
     a->ldr(w12, ptr(x23, kParcelPrefixScratchOffset + 4));
     a->str(w12, ptr(x23, kReplyArrayLengthScratchOffset));
-    a->cbz(w12, array_invalid);
-    a->cmp(w12, 64);
-    a->b(CondCode::kHI, array_invalid);
+    a->cmp(w12, kWidevineDeviceUniqueIdBytes);
+    a->b(CondCode::kNE, array_invalid);
     a->add(x14, x12, 8);
     a->cmp(x14, x16);
     a->b(CondCode::kHI, array_invalid);
-    aarch64_asm_mov_x(a, x11, 8);
+    aarch64_asm_mov_w(a, w11, 8);
     a->str(w11, ptr(x23, kReplyArrayOffsetScratchOffset));
     a->ldr(w11, ptr(x23, kReplyFlagsScratchOffset));
     a->orr(w11, w11, kReplyFlagStatusOk | kReplyFlagArrayValid);
@@ -1441,111 +979,44 @@ void emit_parse_correlated_reply(Assembler* a,
     a->add(x13, x23, kParcelPrefixScratchOffset + 16);
     a->add(x15, x15, 8);
     kernel_module::export_symbol::copy_from_user(
-        a, copy_helper_err, x13, x15, x12);
+        a, copy_helper_err, x13, x15, kWidevineDeviceUniqueIdBytes);
     a->cbnz(x0, content_fault);
-    a->ldr(w14, ptr(x23, kReplyArrayLengthScratchOffset));
-    a->add(w14, w14, 8);
+    aarch64_asm_mov_w(a, w14, 8 + kWidevineDeviceUniqueIdBytes);
     a->str(w14, ptr(x23, kReplyPrefixSizeScratchOffset));
     a->ldr(w11, ptr(x23, kReplyFlagsScratchOffset));
-    a->orr(w11, w11, kReplyFlagContentReadable);
+    a->orr(w11, w11, kReplyFlagContentReadable |
+                         kReplyFlagReplacementCandidate);
     a->str(w11, ptr(x23, kReplyFlagsScratchOffset));
     emit_counter_increment(
         a,
         context_kaddr,
         offsetof(KernelCounterContext, reply_content_copy_ok));
-
     emit_counter_increment(
         a,
         context_kaddr,
         offsetof(KernelCounterContext, replacement_candidates));
-    a->ldr(w11, ptr(x23, kReplyFlagsScratchOffset));
-    a->orr(w11, w11, kReplyFlagReplacementCandidate);
-    a->str(w11, ptr(x23, kReplyFlagsScratchOffset));
-
-    // Apply the configured client-EUID rule only after the request, status,
-    // array and readable-range guards have all succeeded. x27 is the current
-    // Binder client task for this BR_REPLY.
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, rule_checks));
-    a->ldr(x9, ptr(x27, task_offsets.cred));
-    a->cbz(x9, rule_cred_fault);
-    a->ldr(w10, ptr(x9, task_offsets.cred_euid));
-    aarch64_asm_mov_x(
-        a, x9, context_kaddr + offsetof(KernelCounterContext, last_client_euid));
-    a->str(x10, ptr(x9));
-    a->ldr(x9, ptr(x23, kRuntimeConfigPointerScratchOffset));
-    a->ldr(w11, ptr(x9, offsetof(RuntimeConfigSlot, rule_mode)));
-    a->cbz(w11, rule_match);
-    // Exact-EUID and exact-package modes both enforce one immutable, sorted
-    // EUID set in EL1. The count is checked before a fully unrolled maximum-32
-    // scan, so malformed or zero-bearing policies fail closed without dynamic
-    // allocation or an attacker-controlled loop bound.
-    a->ldr(x9, ptr(x23, kRuntimeConfigPointerScratchOffset));
-    a->ldr(w11, ptr(x9, offsetof(RuntimeConfigSlot, target_count)));
-    a->cbz(w11, rule_miss);
-    a->cmp(w11, static_cast<uint32_t>(kRuntimeTargetLimit));
-    a->b(CondCode::kHI, rule_miss);
-    a->add(x12, x9, offsetof(RuntimeConfigSlot, target_euids));
-    for (uint32_t index = 0; index < kRuntimeTargetLimit; ++index) {
-        a->cmp(w11, index + 1);
-        a->b(CondCode::kLO, rule_miss);
-        a->ldr(w13, ptr(x12, index * sizeof(uint32_t)));
-        a->cbz(w13, rule_miss);
-        a->cmp(w10, w13);
-        a->b(CondCode::kEQ, rule_match);
-    }
-    a->b(rule_miss);
-
-    a->bind(rule_cred_fault);
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, rule_cred_faults));
-    a->b(done);
-    a->bind(rule_miss);
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, rule_misses));
-    a->b(done);
-    a->bind(rule_match);
-    emit_counter_increment(
-        a, context_kaddr, offsetof(KernelCounterContext, rule_matches));
-    a->ldr(w11, ptr(x23, kReplyFlagsScratchOffset));
-    a->orr(w11, w11, kReplyFlagRuleMatched);
-    a->str(w11, ptr(x23, kReplyFlagsScratchOffset));
 
     a->ldr(x9, ptr(x23, kRuntimeConfigPointerScratchOffset));
     a->ldr(w12, ptr(x9, offsetof(RuntimeConfigSlot, virtual_id_length)));
-    a->ldr(w14, ptr(x23, kReplyArrayLengthScratchOffset));
-    a->cmp(w12, w14);
+    a->cmp(w12, kWidevineDeviceUniqueIdBytes);
     a->b(CondCode::kNE, length_mismatch);
-    a->ldr(x9, ptr(x23, kRuntimeConfigPointerScratchOffset));
     a->ldr(w11, ptr(x9, offsetof(RuntimeConfigSlot, replacement_mode)));
     a->cbz(w11, dry_run);
 
-    // Write-test mode: exact-length replacement at the previously validated
-    // buffer + 8 byte-array content address.
     a->ldr(x15, ptr(x23, kTransactionScratchOffset + 48));
     a->add(x15, x15, 8);
-    a->ldr(x13, ptr(x23, kRuntimeConfigPointerScratchOffset));
-    a->add(x13, x13, offsetof(RuntimeConfigSlot, virtual_id));
-    a->ldr(w12, ptr(x23, kReplyArrayLengthScratchOffset));
+    a->add(x13, x9, offsetof(RuntimeConfigSlot, virtual_id));
     kernel_module::export_symbol::copy_to_user(
-        a, copy_helper_err, x15, x13, x12);
-    a->cbnz(x0, copy_to_user_fault);
+        a, copy_helper_err, x15, x13, kWidevineDeviceUniqueIdBytes);
+    a->cbnz(x0, write_fault);
     emit_counter_increment(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, replacement_write_ok));
+        a, context_kaddr, offsetof(KernelCounterContext, replacement_write_ok));
     a->ldr(w11, ptr(x23, kReplyFlagsScratchOffset));
     a->orr(w11, w11, kReplyFlagReplaced);
     a->str(w11, ptr(x23, kReplyFlagsScratchOffset));
     emit_replacement_success_telemetry(a, context_kaddr);
     a->b(done);
 
-    a->bind(length_mismatch);
-    emit_counter_increment(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, replacement_length_mismatch));
-    a->b(done);
     a->bind(dry_run);
     emit_counter_increment(
         a,
@@ -1555,178 +1026,29 @@ void emit_parse_correlated_reply(Assembler* a,
     a->orr(w11, w11, kReplyFlagDryRun);
     a->str(w11, ptr(x23, kReplyFlagsScratchOffset));
     a->b(done);
-    a->bind(copy_to_user_fault);
+
+    a->bind(length_mismatch);
+    emit_counter_increment(
+        a,
+        context_kaddr,
+        offsetof(KernelCounterContext, replacement_length_mismatch));
+    a->b(done);
+    a->bind(write_fault);
     emit_counter_increment(
         a,
         context_kaddr,
         offsetof(KernelCounterContext, replacement_copy_to_user_faults));
-
-    // Binder maps the receive buffer read-only in EL0. If ordinary
-    // copy_to_user observes that VMA protection, use the kernel's remote-mm
-    // helper with FOLL_WRITE | FOLL_FORCE. The target task is the current
-    // Binder client captured in x27; both the target and exact length are
-    // reloaded from validated scratch instead of trusting call-clobbered
-    // registers from the first write attempt.
-    a->ldr(x15, ptr(x23, kTransactionScratchOffset + 48));
-    a->add(x15, x15, 8);
-    a->ldr(x13, ptr(x23, kRuntimeConfigPointerScratchOffset));
-    a->add(x13, x13, offsetof(RuntimeConfigSlot, virtual_id));
-    a->ldr(w12, ptr(x23, kReplyArrayLengthScratchOffset));
-    aarch64_asm_mov_w(a, w14, 0x11); // FOLL_WRITE | FOLL_FORCE
-    kernel_module::export_symbol::linux_above_4_9_0::access_process_vm(
-        a, copy_helper_err, x27, x15, x13, w12, w14);
-    a->sxtw(x10, w0);
-    aarch64_asm_mov_x(
-        a,
-        x9,
-        context_kaddr +
-            offsetof(KernelCounterContext,
-                     replacement_access_vm_last_result));
-    a->str(x10, ptr(x9));
-    a->cmp(w0, w12);
-    a->b(CondCode::kNE, access_vm_fault);
-    emit_counter_increment(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, replacement_access_vm_ok));
-    emit_counter_increment(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, replacement_write_ok));
-    a->ldr(w11, ptr(x23, kReplyFlagsScratchOffset));
-    a->orr(w11, w11, kReplyFlagReplaced);
-    a->str(w11, ptr(x23, kReplyFlagsScratchOffset));
-    emit_replacement_success_telemetry(a, context_kaddr);
-    a->b(done);
-
-    a->bind(access_vm_fault);
-    emit_counter_increment(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, replacement_access_vm_faults));
-
-    // FOLL_FORCE still rejects Binder's VM_MIXEDMAP receive VMA because the
-    // driver intentionally removes VM_MAYWRITE. Pin the already-present
-    // read-only pages without FOLL_WRITE, translate their struct page pointers
-    // to the arm64 linear map, then overwrite only the validated byte range.
-    // The 64-byte reply limit spans at most two pages.
-    a->ldr(x15, ptr(x23, kTransactionScratchOffset + 48));
-    a->add(x15, x15, 8);
-    a->ldr(w12, ptr(x23, kReplyArrayLengthScratchOffset));
-    a->and_(x14, x15, page_map.page_size - 1); // offset in first page
-    a->add(x10, x14, x12);
-    a->add(x10, x10, page_map.page_size - 1);
-    a->lsr(x10, x10, page_map.page_shift); // one or two pages
-    a->str(w10, ptr(x23, kPinnedPageCountScratchOffset));
-    a->and_(x15, x15, ~(static_cast<uint64_t>(page_map.page_size) - 1));
-    aarch64_asm_mov_w(a, w11, 0); // read pin; no FOLL_WRITE
-    a->add(x13, x23, kPinnedPagesScratchOffset);
-    kernel_module::export_symbol::linux_above_5_6_0::pin_user_pages_fast(
-        a, copy_helper_err, x15, w10, w11, x13);
-    a->str(w0, ptr(x23, kPinnedPageResultScratchOffset));
-    a->sxtw(x11, w0);
-    aarch64_asm_mov_x(
-        a,
-        x9,
-        context_kaddr +
-            offsetof(KernelCounterContext,
-                     replacement_page_pin_last_result));
-    a->str(x11, ptr(x9));
-    a->ldr(w10, ptr(x23, kPinnedPageCountScratchOffset));
-    a->cmp(w0, w10);
-    a->b(CondCode::kNE, page_pin_partial_cleanup);
-    emit_counter_increment(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, replacement_page_pin_ok));
-
-    aarch64_asm_mov_w(a, w10, 0); // copied byte index
-    a->bind(page_copy_loop);
-    a->cmp(w10, w12);
-    a->b(CondCode::kHS, page_copy_done);
-    a->add(x11, x14, x10);
-    a->lsr(x9, x11, page_map.page_shift); // pinned page index
-    a->lsl(x9, x9, 3);
-    a->add(x9, x23, x9);
-    a->ldr(x16, ptr(x9, kPinnedPagesScratchOffset));
-
-    // page_to_pfn(page) followed by __va(PFN_PHYS(pfn)). All constants are
-    // calibrated by the SDK while the handler is built on the target kernel.
-    aarch64_asm_mov_x(a, x9, page_map.vmemmap);
-    a->sub(x16, x16, x9);
-    aarch64_asm_mov_x(a, x9, page_map.struct_page_size);
-    a->udiv(x16, x16, x9);
-    a->lsl(x16, x16, page_map.page_shift);
-    aarch64_asm_mov_x(a, x9, page_map.phys_offset);
-    a->sub(x16, x16, x9);
-    aarch64_asm_mov_x(a, x9, page_map.linear_map_base);
-    a->add(x16, x16, x9);
-    a->and_(x11, x11, page_map.page_size - 1);
-    a->add(x16, x16, x11);
-
-    a->ldr(x13, ptr(x23, kRuntimeConfigPointerScratchOffset));
-    a->add(x13, x13, offsetof(RuntimeConfigSlot, virtual_id));
-    a->add(x13, x13, x10);
-    a->ldrb(w9, ptr(x13));
-    a->strb(w9, ptr(x16));
-    a->add(w10, w10, 1);
-    a->b(page_copy_loop);
-
-    a->bind(page_copy_done);
-    aarch64_asm_mov_w(a, w10, 0);
-    a->bind(page_flush_loop);
-    a->ldr(w12, ptr(x23, kPinnedPageCountScratchOffset));
-    a->cmp(w10, w12);
-    a->b(CondCode::kHS, page_flush_done);
-    a->lsl(x11, x10, 3);
-    a->add(x11, x23, x11);
-    a->ldr(x16, ptr(x11, kPinnedPagesScratchOffset));
-    emit_call_kernel_symbol_one_arg(
-        a, copy_helper_err, "flush_dcache_page", x16);
-    a->add(w10, w10, 1);
-    a->b(page_flush_loop);
-
-    a->bind(page_flush_done);
-    a->add(x13, x23, kPinnedPagesScratchOffset);
-    a->ldr(w12, ptr(x23, kPinnedPageCountScratchOffset));
-    emit_call_kernel_symbol_two_args(
-        a, copy_helper_err, "unpin_user_pages", x13, x12);
-    emit_counter_increment(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, replacement_page_write_ok));
-    emit_counter_increment(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, replacement_write_ok));
-    a->ldr(w11, ptr(x23, kReplyFlagsScratchOffset));
-    a->orr(w11, w11, kReplyFlagReplaced);
-    a->str(w11, ptr(x23, kReplyFlagsScratchOffset));
-    emit_replacement_success_telemetry(a, context_kaddr);
-    a->b(done);
-
-    a->bind(page_pin_partial_cleanup);
-    a->ldr(w11, ptr(x23, kPinnedPageResultScratchOffset));
-    a->cmp(w11, 0);
-    a->b(CondCode::kLE, page_pin_fault);
-    a->add(x13, x23, kPinnedPagesScratchOffset);
-    emit_call_kernel_symbol_two_args(
-        a, copy_helper_err, "unpin_user_pages", x13, x11);
-    a->bind(page_pin_fault);
-    emit_counter_increment(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, replacement_page_pin_faults));
-    emit_counter_increment(
-        a,
-        context_kaddr,
-        offsetof(KernelCounterContext, replacement_page_write_faults));
     emit_counter_increment(
         a,
         context_kaddr,
         offsetof(KernelCounterContext, replacement_write_faults));
     a->b(done);
-
+    a->bind(no_pending);
+    emit_counter_increment(
+        a,
+        context_kaddr,
+        offsetof(KernelCounterContext, reply_without_pending));
+    a->b(done);
     a->bind(header_fault);
     emit_counter_increment(
         a,
@@ -1756,33 +1078,36 @@ void emit_record_transaction(Assembler* a,
                              uint64_t context_kaddr,
                              uint32_t expected_ioc_type,
                              const TaskIdentityOffsets& task_offsets,
-                             const DirectPageMapProfile& page_map,
                              KModErr& copy_helper_err) {
     const Label correlation_ready = a->newLabel();
     const Label publish = a->newLabel();
 
-    emit_capture_parcel_prefix(
-        a, context_kaddr, expected_ioc_type, copy_helper_err);
+    emit_reset_transaction_parse_scratch(a);
+    // Request recognition is required only for BR_TRANSACTION delivered to
+    // the HAL. BC_REPLY correlation uses the Pending flags and parses the
+    // reply body directly, so it avoids an extra prefix copy and token scan.
+    if (expected_ioc_type == static_cast<uint32_t>('r')) {
+        emit_capture_parcel_prefix(
+            a, context_kaddr, expected_ioc_type, copy_helper_err);
+    }
 
     kernel_module::export_symbol::get_current(a, x27);
     a->mov(x21, xzr); // correlated request event id
     a->mov(x17, xzr); // correlated request Parcel flags
 
     if (expected_ioc_type == static_cast<uint32_t>('c')) {
-        emit_plugin_map_classify_request(a, context_kaddr, task_offsets);
-    }
-
-    if (expected_ioc_type == static_cast<uint32_t>('r')) {
-        aarch64_asm_mov_x(a, x12, static_cast<uint32_t>(BR_REPLY));
+        const Label is_reply = a->newLabel();
+        aarch64_asm_mov_x(a, x12, static_cast<uint32_t>(BC_REPLY));
+        a->cmp(w24, w12);
+        a->b(CondCode::kEQ, is_reply);
+        aarch64_asm_mov_x(a, x12, static_cast<uint32_t>(BC_REPLY_SG));
         a->cmp(w24, w12);
         a->b(CondCode::kNE, correlation_ready);
+        a->bind(is_reply);
         emit_pending_pop(a, context_kaddr, false);
+        emit_parse_hal_correlated_reply(a, context_kaddr, copy_helper_err);
     }
     a->bind(correlation_ready);
-    emit_parse_correlated_reply(
-        a, context_kaddr, task_offsets, page_map, copy_helper_err);
-    emit_parse_widevine_create_reply(
-        a, context_kaddr, task_offsets, copy_helper_err);
 
     emit_reserve_event(a, context_kaddr);
     a->str(x27, ptr(x28, offsetof(BinderTransactionEvent, task_kaddr)));
@@ -1819,10 +1144,8 @@ void emit_record_transaction(Assembler* a,
                              reply_byte_array_offset)));
     a->ldr(w11, ptr(x23, kReplyFlagsScratchOffset));
     a->str(w11, ptr(x28, offsetof(BinderTransactionEvent, reply_flags)));
-    a->ldr(w11, ptr(x23, kFactoryUuidOffsetScratchOffset));
-    a->str(w11, ptr(x28, offsetof(BinderTransactionEvent, factory_uuid_offset)));
-    a->ldr(w11, ptr(x23, kPluginHandleScratchOffset));
-    a->str(w11, ptr(x28, offsetof(BinderTransactionEvent, plugin_handle)));
+    a->str(wzr, ptr(x28, offsetof(BinderTransactionEvent, reserved0)));
+    a->str(wzr, ptr(x28, offsetof(BinderTransactionEvent, reserved1)));
 
     a->ldr(x11, ptr(x23, kTransactionScratchOffset + 0));
     a->str(x11, ptr(x28, offsetof(BinderTransactionEvent, target)));
@@ -1861,7 +1184,6 @@ void emit_record_transaction(Assembler* a,
         aarch64_asm_mov_x(
             a, x12, static_cast<uint32_t>(BinderEventKind::kBcTransaction));
         a->str(w12, ptr(x28, offsetof(BinderTransactionEvent, kind)));
-        emit_pending_push(a, context_kaddr, task_offsets);
         a->b(publish);
     } else {
         const Label not_reply = a->newLabel();
@@ -1883,11 +1205,29 @@ void emit_record_transaction(Assembler* a,
             x12,
             static_cast<uint32_t>(BinderEventKind::kBrTransactionSecCtx));
         a->str(w12, ptr(x28, offsetof(BinderTransactionEvent, kind)));
+        a->ldr(w11, ptr(x23, kParcelFlagsScratchOffset));
+        const Label secctx_not_device_id = a->newLabel();
+        a->tbz(x11, 0, secctx_not_device_id);
+        emit_counter_increment(
+            a,
+            context_kaddr,
+            offsetof(KernelCounterContext, server_request_hits));
+        emit_pending_push(a, context_kaddr, task_offsets);
+        a->bind(secctx_not_device_id);
         a->b(publish);
         a->bind(normal_transaction);
         aarch64_asm_mov_x(
             a, x12, static_cast<uint32_t>(BinderEventKind::kBrTransaction));
         a->str(w12, ptr(x28, offsetof(BinderTransactionEvent, kind)));
+        a->ldr(w11, ptr(x23, kParcelFlagsScratchOffset));
+        const Label transaction_not_device_id = a->newLabel();
+        a->tbz(x11, 0, transaction_not_device_id);
+        emit_counter_increment(
+            a,
+            context_kaddr,
+            offsetof(KernelCounterContext, server_request_hits));
+        emit_pending_push(a, context_kaddr, task_offsets);
+        a->bind(transaction_not_device_id);
         a->b(publish);
     }
 
@@ -1905,7 +1245,6 @@ void emit_record_transaction(Assembler* a,
 void emit_parse_command_stream(Assembler* a,
                                uint64_t context_kaddr,
                                const TaskIdentityOffsets& task_offsets,
-                               const DirectPageMapProfile& page_map,
                                GpX binder_file,
                                GpX user_buffer,
                                GpX consumed,
@@ -1997,7 +1336,6 @@ void emit_parse_command_stream(Assembler* a,
         context_kaddr,
         expected_ioc_type,
         task_offsets,
-        page_map,
         copy_helper_err);
     a->b(command_processed);
 
@@ -2009,36 +1347,6 @@ void emit_parse_command_stream(Assembler* a,
     a->b(command_processed);
 
     a->bind(not_transaction);
-    if (expected_ioc_type == static_cast<uint32_t>('c')) {
-        const Label not_release = a->newLabel();
-        aarch64_asm_mov_w(a, w26, static_cast<uint32_t>(BC_RELEASE));
-        a->cmp(w24, w26);
-        a->b(CondCode::kNE, not_release);
-        a->add(x14, x19, sizeof(uint32_t));
-        a->add(x13, x23, kPluginHandleScratchOffset);
-        kernel_module::export_symbol::copy_from_user(
-            a, copy_helper_err, x13, x14, sizeof(uint32_t));
-        a->cbnz(x0, copy_fault);
-        kernel_module::export_symbol::get_current(a, x27);
-        emit_plugin_map_release(a, context_kaddr, task_offsets);
-        a->bind(not_release);
-    } else {
-        const Label terminal_reply = a->newLabel();
-        const Label not_terminal = a->newLabel();
-        auto emit_terminal_match = [&](uint32_t command) {
-            aarch64_asm_mov_x(a, x26, command);
-            a->cmp(w24, w26);
-            a->b(CondCode::kEQ, terminal_reply);
-        };
-        emit_terminal_match(static_cast<uint32_t>(BR_DEAD_REPLY));
-        emit_terminal_match(static_cast<uint32_t>(BR_FAILED_REPLY));
-        emit_terminal_match(static_cast<uint32_t>(BR_FROZEN_REPLY));
-        a->b(not_terminal);
-        a->bind(terminal_reply);
-        kernel_module::export_symbol::get_current(a, x27);
-        emit_pending_pop(a, context_kaddr, true);
-        a->bind(not_terminal);
-    }
 
     a->bind(command_processed);
 
@@ -2063,9 +1371,6 @@ void emit_parse_command_stream(Assembler* a,
 KModErr build_readonly_parser_handler(uint64_t context_kaddr,
                                       const TaskIdentityOffsets& task_offsets,
                                       std::vector<uint8_t>& handler) {
-    DirectPageMapProfile page_map;
-    RETURN_IF_ERROR(resolve_direct_page_map_profile(page_map));
-
     aarch64_asm_ctx asm_ctx = init_aarch64_asm();
     Assembler* a = asm_ctx.assembler();
     if (a == nullptr) {
@@ -2077,7 +1382,7 @@ KModErr build_readonly_parser_handler(uint64_t context_kaddr,
     const Label tracked = a->newLabel();
     const Label bypass = a->newLabel();
     const Label finish = a->newLabel();
-    emit_package_uid_or_target_gate(
+    emit_hal_identity_gate(
         a,
         context_kaddr,
         task_offsets,
@@ -2092,6 +1397,8 @@ KModErr build_readonly_parser_handler(uint64_t context_kaddr,
 
     a->bind(tracked);
 
+    emit_counter_increment(
+        a, context_kaddr, offsetof(KernelCounterContext, hal_gate_hits));
     emit_counter_increment(
         a, context_kaddr, offsetof(KernelCounterContext, active_calls));
     emit_counter_increment(
@@ -2129,12 +1436,42 @@ KModErr build_readonly_parser_handler(uint64_t context_kaddr,
         a, context_kaddr, offsetof(KernelCounterContext, pre_header_ok));
     a->ldr(x9, ptr(sp, kLocalHeader + 0));
     a->str(x9, ptr(sp, kLocalWriteSize));
+    a->ldr(x9, ptr(sp, kLocalHeader + 8));
+    a->str(x9, ptr(sp, kLocalWriteConsumed));
     a->ldr(x9, ptr(sp, kLocalHeader + 16));
     a->str(x9, ptr(sp, kLocalWriteBuffer));
     a->ldr(x9, ptr(sp, kLocalHeader + 24));
     a->str(x9, ptr(sp, kLocalReadSize));
     a->ldr(x9, ptr(sp, kLocalHeader + 40));
     a->str(x9, ptr(sp, kLocalReadBuffer));
+    // HAL replies live in the unconsumed BC stream. Parse and, in Write mode,
+    // replace the correlated BC_REPLY before the Binder driver copies it.
+    a->ldr(x14, ptr(sp, kLocalWriteConsumed));
+    a->ldr(x15, ptr(sp, kLocalWriteSize));
+    a->cmp(x14, x15);
+    a->b(CondCode::kHI, pre_header_fault);
+    a->ldr(x13, ptr(sp, kLocalWriteBuffer));
+    a->add(x13, x13, x14);
+    a->sub(x15, x15, x14);
+    a->ldr(x12, ptr(sp, kLocalFile));
+    emit_parse_command_stream(
+        a,
+        context_kaddr,
+        task_offsets,
+        x12,
+        x13,
+        x15,
+        static_cast<uint32_t>('c'),
+        offsetof(KernelCounterContext, write_streams),
+        offsetof(KernelCounterContext, bc_commands),
+        offsetof(KernelCounterContext, bc_transaction_commands),
+        offsetof(KernelCounterContext, write_boundary_errors),
+        offsetof(KernelCounterContext, write_copy_faults),
+        offsetof(KernelCounterContext, write_capped),
+        copy_helper_err);
+    if (is_failed(copy_helper_err)) {
+        return copy_helper_err;
+    }
     a->mov(x9, 1);
     a->str(x9, ptr(sp, kLocalPreHeaderValid));
     a->b(pre_header_done);
@@ -2189,34 +1526,16 @@ KModErr build_readonly_parser_handler(uint64_t context_kaddr,
     a->ldr(x15, ptr(sp, kLocalWriteSize));
     a->cmp(x14, x15);
     a->b(CondCode::kHI, post_header_invalid);
+    a->ldr(x10, ptr(sp, kLocalWriteConsumed));
+    a->cmp(x14, x10);
+    a->b(CondCode::kLO, post_header_invalid);
     a->ldr(x16, ptr(sp, kLocalHeader + 32));
     a->ldr(x17, ptr(sp, kLocalReadSize));
     a->cmp(x16, x17);
     a->b(CondCode::kHI, post_header_invalid);
 
-    // Parse the user write stream as BC ('c') and the driver read stream as
-    // BR ('r'). The emitters touch only four bytes per top-level command.
-    a->ldr(x13, ptr(sp, kLocalWriteBuffer));
-    a->ldr(x12, ptr(sp, kLocalFile));
-    emit_parse_command_stream(
-        a,
-        context_kaddr,
-        task_offsets,
-        page_map,
-        x12,
-        x13,
-        x14,
-        static_cast<uint32_t>('c'),
-        offsetof(KernelCounterContext, write_streams),
-        offsetof(KernelCounterContext, bc_commands),
-        offsetof(KernelCounterContext, bc_transaction_commands),
-        offsetof(KernelCounterContext, write_boundary_errors),
-        offsetof(KernelCounterContext, write_copy_faults),
-        offsetof(KernelCounterContext, write_capped),
-        copy_helper_err);
-    if (is_failed(copy_helper_err)) {
-        return copy_helper_err;
-    }
+    // The post path only consumes BR commands returned by the driver. The BC
+    // stream was parsed before the original ioctl so replacement was timely.
     a->ldr(x13, ptr(sp, kLocalReadBuffer));
     a->ldr(x12, ptr(sp, kLocalFile));
     // Reload consumed: x16 is caller-saved and the first parser calls a helper.
@@ -2225,7 +1544,6 @@ KModErr build_readonly_parser_handler(uint64_t context_kaddr,
         a,
         context_kaddr,
         task_offsets,
-        page_map,
         x12,
         x13,
         x16,
@@ -2278,8 +1596,6 @@ KModErr resolve_and_validate_task_identity_offsets(TaskIdentityOffsets& offsets)
     offsets = {};
     RETURN_IF_ERROR(kernel_module::get_task_struct_pid_offset(offsets.pid));
     RETURN_IF_ERROR(kernel_module::get_task_struct_tgid_offset(offsets.tgid));
-    RETURN_IF_ERROR(kernel_module::get_task_struct_cred_offset(offsets.cred));
-    RETURN_IF_ERROR(kernel_module::get_cred_euid_offset(offsets.cred_euid));
 
     aarch64_asm_ctx asm_ctx = init_aarch64_asm();
     Assembler* a = asm_ctx.assembler();
@@ -2310,41 +1626,18 @@ KModErr resolve_and_validate_task_identity_offsets(TaskIdentityOffsets& offsets)
         return KModErr::ERR_MODULE_OFFSET_NOT_FOUND;
     }
 
-    aarch64_asm_ctx cred_ctx = init_aarch64_asm();
-    Assembler* cred_a = cred_ctx.assembler();
-    if (cred_a == nullptr) {
-        offsets = {};
-        return KModErr::ERR_MODULE_ASM;
-    }
-    kernel_module::arm64_module_asm_func_start(cred_a);
-    kernel_module::export_symbol::get_current(cred_a, x9);
-    cred_a->ldr(x9, ptr(x9, offsets.cred));
-    cred_a->ldr(w9, ptr(x9, offsets.cred_euid));
-    kernel_module::arm64_module_asm_func_end(cred_a, x9);
-    if (cred_ctx.has_error()) {
-        offsets = {};
-        return KModErr::ERR_MODULE_ASM;
-    }
-    uint64_t observed_euid = UINT64_MAX;
-    RETURN_IF_ERROR(kernel_module::execute_kernel_asm_func(
-        aarch64_asm_to_bytes(cred_a), observed_euid));
-    if (static_cast<uint32_t>(observed_euid) !=
-        static_cast<uint32_t>(geteuid())) {
-        offsets = {};
-        return KModErr::ERR_MODULE_OFFSET_NOT_FOUND;
-    }
     return KModErr::OK;
 }
 
 KModErr install_readonly_parser_hook(uint64_t target_kaddr,
                                      const TaskIdentityOffsets& task_offsets,
                                      const ReplacementConfig& config,
+                                     const HalIdentityConfig& identities,
                                      CounterHookSession& session) {
     session = {};
     session.target_kaddr = target_kaddr;
-    if (config.config_generation == 0 || config.seed_generation == 0 ||
-        config.virtual_id_length == 0 || config.virtual_id_length > 64 ||
-        !validate_runtime_targets(config)) {
+    if (!validate_runtime_config(config) ||
+        !validate_hal_identities(identities)) {
         return KModErr::ERR_MODULE_PARAM;
     }
 
@@ -2355,19 +1648,6 @@ KModErr install_readonly_parser_hook(uint64_t target_kaddr,
     KernelCounterContext initial{};
     initial.magic = kCounterContextMagic;
     initial.abi_version = kCounterContextAbi;
-    initial.config_generation = config.config_generation;
-    initial.seed_generation = config.seed_generation;
-    initial.profile_fingerprint = config.profile_fingerprint;
-    initial.replacement_mode = static_cast<uint32_t>(config.mode);
-    initial.rule_mode = config.rule_mode;
-    initial.target_count = config.target_count;
-    initial.virtual_id_length = config.virtual_id_length;
-    std::copy(config.target_euids.begin(),
-              config.target_euids.end(),
-              initial.target_euids);
-    std::memcpy(initial.virtual_id,
-                config.virtual_id.data(),
-                config.virtual_id_length);
     initial.active_config_slot = 0;
     initial.active_config_reserved = 0;
     initial.runtime_config_switches = 0;
@@ -2377,17 +1657,21 @@ KModErr install_readonly_parser_hook(uint64_t target_kaddr,
     runtime_slot.seed_generation = config.seed_generation;
     runtime_slot.profile_fingerprint = config.profile_fingerprint;
     runtime_slot.replacement_mode = static_cast<uint32_t>(config.mode);
-    runtime_slot.rule_mode = config.rule_mode;
-    runtime_slot.target_count = config.target_count;
     runtime_slot.virtual_id_length = config.virtual_id_length;
-    std::copy(config.target_euids.begin(),
-              config.target_euids.end(),
-              runtime_slot.target_euids);
     std::memcpy(runtime_slot.virtual_id,
                 config.virtual_id.data(),
                 config.virtual_id_length);
     initial.config_slots[0] = runtime_slot;
     initial.config_slots[1] = runtime_slot;
+    initial.active_hal_identity_slot = 0;
+    HalIdentitySet hal_set{};
+    hal_set.generation = identities.generation;
+    hal_set.count = identities.count;
+    std::copy(identities.tgids.begin(),
+              identities.tgids.end(),
+              hal_set.tgids);
+    initial.hal_identity_slots[0] = hal_set;
+    initial.hal_identity_slots[1] = hal_set;
     KModErr err = kernel_module::write_kernel_mem(
         session.context_kaddr,
         &initial,
@@ -2420,8 +1704,9 @@ KModErr install_readonly_parser_hook(uint64_t target_kaddr,
 
 namespace {
 
-KModErr flip_runtime_config_slot(uint64_t context_kaddr,
-                                  uint32_t slot) {
+KModErr flip_slot_index(uint64_t context_kaddr,
+                        size_t active_slot_offset,
+                        uint32_t slot) {
     aarch64_asm_ctx asm_ctx = init_aarch64_asm();
     Assembler* a = asm_ctx.assembler();
     if (a == nullptr || slot > 1) {
@@ -2431,7 +1716,7 @@ KModErr flip_runtime_config_slot(uint64_t context_kaddr,
     aarch64_asm_mov_x(
         a,
         x9,
-        context_kaddr + offsetof(KernelCounterContext, active_config_slot));
+        context_kaddr + active_slot_offset);
     aarch64_asm_mov_w(a, w10, slot);
     // Release-publish the slot after the EL0 writer has filled every byte.
     a->stlr(w10, ptr(x9));
@@ -2454,9 +1739,7 @@ KModErr publish_runtime_config(const CounterHookSession& session,
                                const ReplacementConfig& config,
                                uint32_t& published_slot) {
     published_slot = 0;
-    if (session.context_kaddr == 0 || config.config_generation == 0 ||
-        config.seed_generation == 0 || config.virtual_id_length == 0 ||
-        config.virtual_id_length > 64 || !validate_runtime_targets(config)) {
+    if (session.context_kaddr == 0 || !validate_runtime_config(config)) {
         return KModErr::ERR_MODULE_PARAM;
     }
 
@@ -2474,12 +1757,7 @@ KModErr publish_runtime_config(const CounterHookSession& session,
     next.seed_generation = config.seed_generation;
     next.profile_fingerprint = config.profile_fingerprint;
     next.replacement_mode = static_cast<uint32_t>(config.mode);
-    next.rule_mode = config.rule_mode;
-    next.target_count = config.target_count;
     next.virtual_id_length = config.virtual_id_length;
-    std::copy(config.target_euids.begin(),
-              config.target_euids.end(),
-              next.target_euids);
     std::memcpy(next.virtual_id,
                 config.virtual_id.data(),
                 config.virtual_id_length);
@@ -2493,13 +1771,6 @@ KModErr publish_runtime_config(const CounterHookSession& session,
         static_cast<uint32_t>(sizeof(next)),
         kernel_module::KernMemProt::KMP_RW));
 
-    // Keep the legacy diagnostic fields coherent for existing log readers.
-    RETURN_IF_ERROR(kernel_module::write_kernel_mem(
-        session.context_kaddr + offsetof(KernelCounterContext,
-                                          config_generation),
-        &next,
-        static_cast<uint32_t>(sizeof(next)),
-        kernel_module::KernMemProt::KMP_RW));
     const uint64_t switches = snapshot.runtime_config_switches + 1;
     RETURN_IF_ERROR(kernel_module::write_kernel_mem(
         session.context_kaddr +
@@ -2507,7 +1778,57 @@ KModErr publish_runtime_config(const CounterHookSession& session,
         &switches,
         static_cast<uint32_t>(sizeof(switches)),
         kernel_module::KernMemProt::KMP_RW));
-    RETURN_IF_ERROR(flip_runtime_config_slot(session.context_kaddr, inactive));
+    RETURN_IF_ERROR(flip_slot_index(
+        session.context_kaddr,
+        offsetof(KernelCounterContext, active_config_slot),
+        inactive));
+    published_slot = inactive;
+    return KModErr::OK;
+}
+
+KModErr publish_hal_identities(const CounterHookSession& session,
+                               const HalIdentityConfig& identities,
+                               uint32_t& published_slot) {
+    published_slot = 0;
+    if (session.context_kaddr == 0 ||
+        !validate_hal_identities(identities)) {
+        return KModErr::ERR_MODULE_PARAM;
+    }
+    KernelCounterContext snapshot{};
+    RETURN_IF_ERROR(read_counter_snapshot(session, snapshot));
+    const uint32_t active = snapshot.active_hal_identity_slot & 1U;
+    const uint32_t inactive = active ^ 1U;
+    if (identities.generation <=
+        snapshot.hal_identity_slots[active].generation) {
+        return KModErr::ERR_MODULE_PARAM;
+    }
+
+    HalIdentitySet next{};
+    next.generation = identities.generation;
+    next.count = identities.count;
+    std::copy(identities.tgids.begin(),
+              identities.tgids.end(),
+              next.tgids);
+    const uint64_t slot_kaddr =
+        session.context_kaddr +
+        offsetof(KernelCounterContext, hal_identity_slots) +
+        static_cast<uint64_t>(inactive) * sizeof(HalIdentitySet);
+    RETURN_IF_ERROR(kernel_module::write_kernel_mem(
+        slot_kaddr,
+        &next,
+        static_cast<uint32_t>(sizeof(next)),
+        kernel_module::KernMemProt::KMP_RW));
+    const uint64_t switches = snapshot.hal_identity_switches + 1;
+    RETURN_IF_ERROR(kernel_module::write_kernel_mem(
+        session.context_kaddr +
+            offsetof(KernelCounterContext, hal_identity_switches),
+        &switches,
+        static_cast<uint32_t>(sizeof(switches)),
+        kernel_module::KernMemProt::KMP_RW));
+    RETURN_IF_ERROR(flip_slot_index(
+        session.context_kaddr,
+        offsetof(KernelCounterContext, active_hal_identity_slot),
+        inactive));
     published_slot = inactive;
     return KModErr::OK;
 }

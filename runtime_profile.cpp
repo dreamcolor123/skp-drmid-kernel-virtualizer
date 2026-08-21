@@ -415,22 +415,6 @@ uint64_t virtual_id_fingerprint(const uint8_t* data, size_t size) {
 
 KModErr load_or_create_runtime_profile(bool regenerate_seed,
                                        const char* module_private_dir,
-                                       TargetRuleMode rule_mode,
-                                       uint32_t target_euid,
-                                       RuntimeProfile& profile) {
-    return load_or_create_runtime_profile(regenerate_seed,
-                                          module_private_dir,
-                                          rule_mode,
-                                          target_euid,
-                                          nullptr,
-                                          profile);
-}
-
-KModErr load_or_create_runtime_profile(bool regenerate_seed,
-                                       const char* module_private_dir,
-                                       TargetRuleMode rule_mode,
-                                       uint32_t target_euid,
-                                       const char* package_name,
                                        RuntimeProfile& profile) {
     profile = {};
     if (module_private_dir == nullptr || module_private_dir[0] == '\0') {
@@ -479,51 +463,16 @@ KModErr load_or_create_runtime_profile(bool regenerate_seed,
     static constexpr uint8_t salt[] = {
         'S','K','P','-','D','R','M','I','D','-','S','A','L','T','-','v','1'
     };
-    std::array<uint8_t, 64> info{};
-    size_t info_size = 24;
-    if (rule_mode == TargetRuleMode::kExactPackage) {
-        if (package_name == nullptr || package_name[0] == '\0') {
-            return KModErr::ERR_MODULE_PARAM;
-        }
-        static constexpr uint8_t package_label[] = {
-            'A','1','4','+','-','W','I','D','E','V','I','N','E','-',
-            'P','K','G','-','v','1'
-        };
-        std::copy(std::begin(package_label),
-                  std::end(package_label),
-                  info.begin());
-        info[20] = static_cast<uint8_t>(rule_mode);
-        info[21] = 0x36;
-        info[22] = 0x31;
-        info[23] = 0x32;
-        const auto package_hash = sha256(
-            package_name, std::strlen(package_name));
-        std::copy(package_hash.begin(), package_hash.end(), info.begin() + 32);
-        info_size = info.size();
-    } else {
-        static constexpr uint8_t label[] = {
-            'A','1','4','+','-','W','I','D','E','V','I','N','E','-','v','1'
-        };
-        std::copy(std::begin(label), std::end(label), info.begin());
-        info[16] = static_cast<uint8_t>(rule_mode);
-        info[17] = static_cast<uint8_t>(target_euid);
-        info[18] = static_cast<uint8_t>(target_euid >> 8);
-        info[19] = static_cast<uint8_t>(target_euid >> 16);
-        info[20] = static_cast<uint8_t>(target_euid >> 24);
-        info[21] = 0x36;
-        info[22] = 0x31;
-        info[23] = 0x32;
-    }
+    static constexpr char info[] = "global-widevine-v1";
     if (!hkdf_sha256(record.seed, sizeof(record.seed), salt, sizeof(salt),
-                     info.data(), info_size, profile.virtual_stream.data(),
+                     reinterpret_cast<const uint8_t*>(info), sizeof(info) - 1,
+                     profile.virtual_stream.data(),
                      profile.virtual_stream.size())) {
         return KModErr::ERR_MODULE_TEST_CHANNEL;
     }
     profile.profile_fingerprint = virtual_id_fingerprint(
         profile.virtual_stream.data(), kVirtualIdBytes);
     profile.seed_generation = record.generation;
-    profile.rule_mode = rule_mode;
-    profile.target_euid = target_euid;
     return KModErr::OK;
 }
 

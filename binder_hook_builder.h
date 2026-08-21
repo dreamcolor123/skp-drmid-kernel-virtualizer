@@ -11,20 +11,21 @@ namespace drmid {
 struct TaskIdentityOffsets {
     uint32_t pid = 0;
     uint32_t tgid = 0;
-    uint32_t cred = 0;
-    uint32_t cred_euid = 0;
 };
 
 struct ReplacementConfig {
     ReplacementMode mode = ReplacementMode::kDryRun;
-    uint32_t rule_mode = 0;
-    uint32_t target_count = 0;
     uint32_t virtual_id_length = 0;
     uint64_t config_generation = 0;
     uint64_t seed_generation = 0;
     uint64_t profile_fingerprint = 0;
-    std::array<uint32_t, kRuntimeTargetLimit> target_euids{};
     std::array<uint8_t, 64> virtual_id{};
+};
+
+struct HalIdentityConfig {
+    uint64_t generation = 0;
+    uint32_t count = 0;
+    std::array<uint32_t, kHalIdentityLimit> tgids{};
 };
 
 struct CounterHookSession {
@@ -41,6 +42,13 @@ KModErr publish_runtime_config(const CounterHookSession& session,
                                const ReplacementConfig& config,
                                uint32_t& published_slot);
 
+// Publishes a sorted, unique set of internal Widevine HAL TGIDs. This set is
+// operational state rather than user configuration and never affects the DRM
+// ID/config generation.
+KModErr publish_hal_identities(const CounterHookSession& session,
+                               const HalIdentityConfig& identities,
+                               uint32_t& published_slot);
+
 // Installs the bounded Binder parser/replacement probe. Dry-run is the default;
 // write-test performs only an exact-length replacement after all reply guards.
 KModErr resolve_and_validate_task_identity_offsets(TaskIdentityOffsets& offsets);
@@ -48,6 +56,7 @@ KModErr resolve_and_validate_task_identity_offsets(TaskIdentityOffsets& offsets)
 KModErr install_readonly_parser_hook(uint64_t target_kaddr,
                                      const TaskIdentityOffsets& task_offsets,
                                      const ReplacementConfig& config,
+                                     const HalIdentityConfig& identities,
                                      CounterHookSession& session);
 KModErr read_counter_snapshot(const CounterHookSession& session,
                               KernelCounterContext& snapshot);

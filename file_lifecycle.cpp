@@ -156,14 +156,16 @@ void cleanup_legacy_public_artifacts() {
     cleanup_legacy_development_payloads(kPublicTemporaryDirectory);
 }
 
-void cleanup_module_state_files(const char* module_private_dir) {
-    cleanup_legacy_public_artifacts();
-    if (module_private_dir == nullptr || module_private_dir[0] == '\0') return;
-
-    cleanup_seed_temp_orphans(module_private_dir);
-    constexpr const char* kStateFiles[] = {
-        "drmid_control_v1.sock",
-        "drmid_control_v2.sock",
+size_t cleanup_legacy_target_state_after_global_migration(
+    const char* module_private_dir) {
+    if (module_private_dir == nullptr || module_private_dir[0] == '\0') {
+        return 0;
+    }
+    const int directory_fd = open(module_private_dir,
+                                  O_RDONLY | O_DIRECTORY | O_CLOEXEC |
+                                      O_NOFOLLOW);
+    if (directory_fd < 0) return 0;
+    constexpr const char* kLegacyTargetFiles[] = {
         "drmid_runtime_control_v1.bin",
         "drmid_runtime_control_v1.bin.tmp",
         "drmid_runtime_control_v2.bin",
@@ -172,10 +174,46 @@ void cleanup_module_state_files(const char* module_private_dir) {
         "drmid_target_config_v1.bin.tmp",
         "drmid_target_config_v2.bin",
         "drmid_target_config_v2.bin.tmp",
+        "drmid_label_helper.jar",
+    };
+    size_t removed = 0;
+    for (const char* name : kLegacyTargetFiles) {
+        struct stat info {};
+        if (fstatat(directory_fd, name, &info, AT_SYMLINK_NOFOLLOW) != 0 ||
+            !S_ISREG(info.st_mode)) {
+            continue;
+        }
+        if (unlinkat(directory_fd, name, 0) == 0) ++removed;
+    }
+    if (removed != 0) fsync(directory_fd);
+    close(directory_fd);
+    return removed;
+}
+
+void cleanup_module_state_files(const char* module_private_dir) {
+    cleanup_legacy_public_artifacts();
+    if (module_private_dir == nullptr || module_private_dir[0] == '\0') return;
+
+    cleanup_seed_temp_orphans(module_private_dir);
+    constexpr const char* kStateFiles[] = {
+        "drmid_control_v1.sock",
+        "drmid_control_v2.sock",
+        "drmid_control_v3.sock",
+        "drmid_runtime_control_v1.bin",
+        "drmid_runtime_control_v1.bin.tmp",
+        "drmid_runtime_control_v2.bin",
+        "drmid_runtime_control_v2.bin.tmp",
+        "drmid_runtime_control_v3.bin",
+        "drmid_runtime_control_v3.bin.tmp",
+        "drmid_target_config_v1.bin",
+        "drmid_target_config_v1.bin.tmp",
+        "drmid_target_config_v2.bin",
+        "drmid_target_config_v2.bin.tmp",
         "drmid_seed_record_v1.bin",
         "drmid_seed_record_v1.bin.tmp",
         "drmid_original_fingerprint_v1.bin",
         "drmid_original_fingerprint_v1.bin.tmp",
+        "drmid_label_helper.jar",
         kDaemonLockName,
         "drmid_boot_cleanup.flag",
         "webroot/drmid_boot_cleanup.flag",

@@ -50,7 +50,8 @@ class DeviceIdFingerprintTest(unittest.TestCase):
         self.assertIn(
             "config.virtual_id.data(), config.virtual_id_length", WEB_UI
         )
-        self.assertIn("runtime fingerprint normalized", MODULE)
+        self.assertIn("actual_fingerprint", MODULE)
+        self.assertIn("persisted.profile_fingerprint", MODULE)
 
 
 if __name__ == "__main__":

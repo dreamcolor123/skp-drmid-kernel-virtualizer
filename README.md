@@ -2,38 +2,72 @@
 
 面向 SKRoot Pro 的 Android 14+ / ARM64 纯内核 DRM ID 虚拟化模块。
 
-当前稳定版：**1.1.2**
+本分支版本：**1.2.0**
 
-性能修复候选：**1.1.3-rc2**
+`1.2.0` 使用 Widevine HAL 出站 Binder Hook。所有通过已严格识别的 Widevine HAL
+读取 `deviceUniqueId` 的调用共享当前同一个虚拟 ID，不再配置应用包名或目标 UID。
 
 ## 支持范围
 
-- Android API 34+
-- ARM64
-- Linux 6.6 classic Binder
-- Linux 6.12 classic Binder / Rust Binder
+- Android 14+
+- ARM64、64 位 Binder
+- Linux 6.12 优先
+- Linux 6.6 使用已冻结的严格 resolver profile
 - SKRoot Pro SDK 4.5.4
 
-Linux 6.6 使用严格的内核版本、Binder backend、live symbol 地址和入口指纹联合
-校验。当前已完成 Linux 6.6.89 真机验收；其他精确内核构建若不匹配已知 profile，
-会在安装 Hook 前停止。
+Linux 6.6/6.12 均执行内核版本、Binder backend、live symbol 和入口指纹联合校验；
+未知内核构建在安装 Hook 前停止。
 
-## 功能
+## 实现路径
 
-- 在 Widevine `deviceUniqueId` reply 路径执行固定长度虚拟化
-- 最多配置 32 个应用包名，EL1 使用排序去重后的 EUID 集合匹配
-- Dry-run 与 Write-test 模式
-- 稳定派生 ID 与自定义 32 字节 ID
-- 双槽 runtime config 原子发布
-- 包名解析失败时保留上一代活动配置
-- WebUI 应用选择器、当前语言应用名称及图标
-- WebUI 离开前台后关闭会话和监听端口
-- 有界 Binder correlation 锁；竞争时丢弃本次元数据并保持原调用继续
-- pending/plugin 固定表使用八路有界 LRU 回收，应用反复结束和重新启动时不会因
-  遗留关联项耗尽桶位
-- Binder 全局入口在进入计数、用户内存复制和命令解析前执行严格有界 EUID 门禁；
-  核心服务 UID 直接调用原始 ioctl
-- control daemon 在生产模式下阻塞等待连接，消除空闲期间每 200 ms 的周期唤醒
+```text
+Widevine HAL 收到 BR_TRANSACTION
+  -> 匹配 IDrmPlugin / transaction 11 / deviceUniqueId
+  -> Pending 栈记录请求与 HAL identity generation
+  -> HAL 发送 BC_REPLY 或 BC_REPLY_SG
+  -> 校验 status=0、length=32、Parcel 边界和活动配置
+  -> Dry-run 只计数；Write 对 HAL 出站 Parcel 做 32 字节等长覆盖
+```
+
+非活动 HAL TGID 在计数器、Pending 栈和用户内存复制之前直接进入原始
+`binder_ioctl`。后端不使用应用侧 Binder 接收页、应用 UID 门禁、page-pin、线性
+映射换算或插件句柄表。
+
+## 主要特性
+
+- 全局虚拟化：所有已确认的 Widevine HAL 调用共享一个虚拟 DRM ID。
+- 精确关联：只处理指定接口、事务、属性及合法 32 字节回复。
+- 三种 ID 来源：固定派生、一次性随机生成、64 位十六进制自定义值。
+- 原子热发布：配置写入 inactive slot 后通过 STLR 切换，不重装 Hook。
+- HAL 热恢复：pidfd 监控退出事件，重启后重新发现且不轮换当前虚拟 ID。
+- 有界执行：身份集合、Pending 表和解析长度均有固定上限，无动态内存分配。
+- Fail-closed：身份、ABI、指纹、记录 CRC 或回复格式不匹配时不写入。
+- 低空闲开销：稳定阶段通过 pidfd 和 control socket 阻塞等待，不做周期扫描。
+- WebUI 收口：页面退到后台、关闭或心跳超时后结束会话和监听端口。
+
+## 配置与 ABI
+
+- Kernel Context ABI：18
+- Runtime control：`DRMCTL18` / v3 / 128 字节
+- Control IPC：`DRMIPC18` / v3 / 200 字节
+- RuntimeConfigSlot：96 字节
+- 虚拟 ID 长度：32 字节
+- 固定派生域：`global-widevine-v1`
+- HAL 身份上限：4
+
+v2 → v3 迁移保留现有 ID、mode、generation、seed generation 和 fingerprint，
+丢弃旧 target 字段。旧 target config、runtime v1/v2 与 label helper 仅在 v3 配置
+验证通过后收敛。
+
+## WebUI
+
+运行模式使用“DRM ID虚拟化”单一开关：
+
+- 已关闭：对应 `mode=dry`，仅观察链路，不修改返回内容；
+- 已开启：对应 `mode=write`，替换已严格关联的 32 字节回复。
+
+ID 来源提供固定值、随机值和自定义三项。未选择来源时内部使用 `keep`，只调整运行
+模式；成功应用一次来源操作后清空临时选择，避免误触造成 ID 再次轮换。
 
 ## 目录
 
@@ -41,21 +75,18 @@ Linux 6.6 使用严格的内核版本、Binder backend、live symbol 地址和�
 module_main.cpp              SKP 模块入口与 daemon 主流程
 binder_ioctl_resolver.*      Binder backend 与严格内核 profile
 binder_hook_builder.*        ARM64 Hook 构建与 Binder stream 解析
+hal_identity.*               Widevine HAL 身份发现与生命周期监控
 kernel_context.h             Kernel Context ABI
-target_config.*              多包目标配置及迁移
-runtime_control.*            双槽 runtime config
-control_ipc.*                Control Socket v2
+runtime_control.*            双槽全局 runtime config 与迁移
+control_ipc.*                Control Socket v3
 web_ui.cpp / webroot/        WebUI 后端与页面
 tests/                       离线 Fixture
-tools/                       离线记录辅助工具
 ```
 
 ## 构建
 
-本仓库只保存模块源码，不提交 SKP SDK 静态库、NDK 输出、设备预编译库、管理器日志
-或发布 ZIP。
-
-将仓库放在 SKRoot Pro SDK 的 `testModule` 目录，使其与
+仓库只保存模块源码，不提交 SKP SDK 静态库、NDK 输出、设备预编译库、日志或发布
+ZIP。将仓库放在 SKRoot Pro SDK 的 `testModule` 目录，使其与
 `kernel_module_kit` 并列：
 
 ```text
@@ -64,7 +95,7 @@ testModule/
 └── skp-drmid-kernel-virtualizer/
 ```
 
-需要：
+构建依赖：
 
 - Android NDK 26.3.11579264
 - Android SDK Platform 35 / Build Tools 35.0.0
@@ -76,6 +107,7 @@ Windows：
 set NDK_ROOT=C:\path\to\android-ndk-r26d
 set ANDROID_SDK_ROOT=C:\path\to\Android\Sdk
 set JAVA_HOME=C:\path\to\jdk-17
+clean.bat
 build.bat
 python package.py
 ```
@@ -86,35 +118,8 @@ python package.py
 python3 -m unittest discover -s tests -v
 ```
 
-其中 SDK 固定哈希和历史发布 ZIP 检查仅在对应本地输入存在时执行；其余 ABI、
-parser、配置、WebUI、锁和 Linux 6.6 profile Fixture 可直接运行。
-
-## 发布冻结信息
-
-- 版本：1.1.2
-- Kernel Context ABI：16 / 97,704 bytes
-- Control IPC：v2
-- TargetConfig：v2
-- Linux 6.6.89 backend：`classic_binder-6.6`
-- Linux 6.6 prologue：`d503233f d10343ff a9077bfd a9086ffc`
+源码 Fixture 覆盖 Binder stream、HAL 身份、Pending 并发、Runtime v3、迁移、文件
+生命周期、WebUI 状态与 Linux 6.6/6.12 resolver。SDK 哈希、二进制身份和 ZIP 可复现
+检查在对应本地构建输入存在时执行。
 
 作者：斓梦语
-
-## 1.1.3-rc2 性能候选
-
-- 增加 Binder 入口快速门：保留安装进程自检、当前目标 EUID 和普通 Android
-  应用 UID；其他核心服务 UID 在触碰计数器、用户 header、事件环和关联表前旁路；
-- 目标 EUID 集合仍按活动 runtime slot 热切换，无需重装 Hook；
-- 将 Android 应用 UID 下限 `10000` 先装载到寄存器再比较，修复 rc1 使用
-  AArch64 `CMP-immediate` 时的 `InvalidImmediate`；
-- 生产 control socket 使用无限期阻塞 `poll`，有连接或信号时才唤醒；
-- Kernel Context ABI 更新为 17，总大小保持 97,704 bytes。
-
-## 1.1.2 更新
-
-- pending 与 Widevine plugin handle 表由四路调整为八路，总容量仍固定为 256 项；
-- 桶满时回收最旧关联项，避免应用进程退出后未完成的 Binder 生命周期长期占位；
-- pending 命中同时校验 task pointer、PID 与 TGID，处理 task address 复用；
-- plugin lookup 刷新 LRU 年龄，优先保留仍活跃的 handle；
-- 所有查找与回收均严格限制在最多 8 项，无动态分配；
-- 日志将相关 `collision` 语义明确为已恢复的 `reclaim`，并输出 ABI 与 Context 大小。

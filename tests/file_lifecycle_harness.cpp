@@ -31,6 +31,11 @@ int main(int argc, char** argv) {
         std::cout << drmid::cleanup_legacy_development_payloads(directory) << '\n';
         return 0;
     }
+    if (operation == "cleanup-global-migration") {
+        std::cout << drmid::cleanup_legacy_target_state_after_global_migration(
+            directory) << '\n';
+        return 0;
+    }
     if (operation == "check") {
         pid_t pid = -1;
         if (drmid::daemon_lock_owner_alive(directory, pid)) {

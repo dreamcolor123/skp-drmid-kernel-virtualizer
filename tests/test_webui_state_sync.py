@@ -1,4 +1,10 @@
+#!/usr/bin/env python3
+"""WebUI regression fixtures for global HAL mode and foreground sessions."""
+
 from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 
@@ -7,97 +13,102 @@ HTML = (ROOT / "webroot" / "index.html").read_text(encoding="utf-8")
 
 
 class WebUiStateSyncTest(unittest.TestCase):
-    def test_first_start_has_no_prefilled_device_specific_package(self):
-        self.assertNotIn(">com.sf.activity</textarea>", HTML)
-        self.assertIn('placeholder="请从设备选择应用，或输入包名"', HTML)
-        self.assertIn("选择应用，一次启用", HTML)
-        self.assertIn("s.configured===false", HTML)
-        self.assertIn("尚未选择应用", HTML)
+    def test_no_application_picker_package_or_uid_configuration_remains(self) -> None:
+        for retired in ("/api/apps", "选择应用", "package_status", "target_euid", "sharedUid"):
+            self.assertNotIn(retired, HTML)
+        self.assertIn("一个 ID，全局生效", HTML)
+        self.assertIn("所有经已识别 Widevine HAL", HTML)
 
-    def test_primary_workflow_precedes_advanced_diagnostics(self):
-        self.assertLess(HTML.index("第 1 步"), HTML.index("高级设置"))
-        self.assertLess(HTML.index("高级设置"), HTML.index("诊断信息"))
-        self.assertIn('class="advanced"', HTML)
-        self.assertIn('class="diagnostics"', HTML)
+    def test_virtualization_mode_is_a_single_off_on_switch(self) -> None:
+        self.assertIn('id="modeToggle" type="checkbox" role="switch"', HTML)
+        self.assertIn('id="modeChoice">DRM ID虚拟化</b>', HTML)
+        self.assertIn('aria-label="DRM ID虚拟化开关"', HTML)
+        self.assertIn("当前状态：已关闭", HTML)
+        self.assertIn("当前状态：已开启", HTML)
+        self.assertIn("全局替换已严格关联的 32 字节 deviceUniqueId。", HTML)
+        self.assertIn("$('modeChoice').textContent='DRM ID虚拟化'", HTML)
+        self.assertNotIn("$('modeChoice').textContent=on?", HTML)
+        self.assertIn("checked?'write':'dry'", HTML)
+        self.assertIn(".switchcopy{min-width:0}", HTML)
+        self.assertNotIn('name="mode"', HTML)
+        self.assertLess(HTML.index("<h2>运行模式</h2>"), HTML.index("<h2>运行状态</h2>"))
 
-    def test_dry_run_is_fail_closed_markup_default(self):
-        self.assertLess(HTML.index('<option value="dry">'),
-                        HTML.index('<option value="write">'))
+    def test_id_sources_are_fixed_random_and_custom_only(self) -> None:
+        for action in ("derive", "random", "custom"):
+            self.assertIn(f'name="idAction" value="{action}"', HTML)
+        self.assertNotIn('name="idAction" value="keep"', HTML)
+        for label in ("固定值", "随机值", "自定义"):
+            self.assertIn(label, HTML)
+        self.assertIn("return x?x.value:'keep'", HTML)
+        self.assertIn("不选择时保持当前 ID", HTML)
 
-    def test_apply_is_disabled_until_status_initializes_form(self):
-        self.assertIn('id="apply" class="sr-only" type="submit" disabled', HTML)
-        self.assertIn('id="applyAction" class="btn primary" type="button" disabled', HTML)
-        self.assertIn("if(!formInitialized)return", HTML)
-        self.assertIn("!formInitialized||!dirty||!packages.length", HTML)
+    def test_applied_id_source_is_cleared_to_prevent_accidental_rotation(self) -> None:
+        self.assertIn("document.querySelectorAll('input[name=\"idAction\"]')", HTML)
+        self.assertIn("x.checked=false", HTML)
 
-    def test_status_restores_mode_and_complete_package_list(self):
-        self.assertIn("function syncConfig(s)", HTML)
-        self.assertIn("s.package_status.map(x=>x.package).join('\\n')", HTML)
-        self.assertIn("if(syncForm||!formInitialized)syncConfig(s)", HTML)
-        self.assertIn("render(s,true)", HTML)
-        self.assertIn("s.package_status.map(x=>x.package).join('\\n'):''", HTML)
+    def test_custom_id_requires_exactly_64_hex_characters(self) -> None:
+        self.assertIn('maxlength="64"', HTML)
+        self.assertIn("/^[0-9a-fA-F]{64}$/", HTML)
+        self.assertIn("需要恰好 64 个十六进制字符", HTML)
+        self.assertIn(".field[hidden]{display:none}", HTML)
 
-    def test_first_setup_prepares_write_mode_without_changing_backend_default(self):
-        self.assertIn("s.configured===false?true:s.mode===1", HTML)
-        self.assertIn("$('mode').value=$('effectToggle').checked?'write':'dry'", HTML)
-        self.assertIn("启用并应用", HTML)
+    def test_apply_disabled_until_session_and_valid_form(self) -> None:
+        self.assertIn('id="applyBtn" class="btn primary" type="button" disabled', HTML)
+        self.assertIn("!token||busy||!validCustom()", HTML)
 
-    def test_first_setup_explicitly_selects_derived_id(self):
-        self.assertIn(
-            "$('idAction').value=s.configured===false?'derive':'keep'", HTML
-        )
-        self.assertIn("使用自动生成 ID", HTML)
+    def test_status_restores_mode_without_exposing_id_bytes(self) -> None:
+        self.assertIn("$('modeToggle').checked=s.mode===1", HTML)
+        self.assertIn("s.fingerprint", HTML)
+        self.assertIn("s.device_fingerprint", HTML)
+        self.assertNotIn("virtual_id_hex", HTML)
+        self.assertNotIn("original_id_hex", HTML)
 
-    def test_dirty_state_controls_single_sticky_apply_action(self):
-        self.assertIn("function configSignature()", HTML)
-        self.assertIn("configSignature()!==baselineSignature", HTML)
-        self.assertIn("$('configForm').requestSubmit()", HTML)
-        self.assertIn('id="actionBar" class="action-bar"', HTML)
-
-    def test_multi_package_input_dedup_boundary_and_shared_uid_notice(self):
-        self.assertIn('name="packages" maxlength="4096"', HTML)
-        self.assertIn("unique.length>32", HTML)
-        self.assertIn("new Set(tokens)", HTML)
-        self.assertIn("sharedUidWarn", HTML)
-        self.assertIn("package_status", HTML)
-
-    def test_existing_id_is_kept_until_user_selects_custom_or_derive(self):
-        self.assertIn('name="id_action" type="hidden" value="keep"', HTML)
-        self.assertIn("$('idAction').value='custom'", HTML)
-        self.assertIn("$('idAction').value='derive'", HTML)
-        self.assertIn("s.configured===false?'derive':'keep'", HTML)
-
-    def test_original_and_active_virtual_fingerprints_are_separate(self):
+    def test_hal_lifecycle_and_request_counters_are_visible(self) -> None:
         for marker in (
-            'id="deviceFingerprintShort"', 'id="virtualFingerprintShort"',
-            'id="deviceFingerprint"', 'id="virtualFingerprint"',
-            "s.device_fingerprint||'待采集'",
-            "enabled?(s.fingerprint||'—'):'未启用'",
+            "hal_identity_generation", "hal_monitor_backend",
+            "hal_monitor_wakeups", "server_request_hits", "write_ok",
+            "pidfd 事件驱动", "稳定阶段无周期扫描",
         ):
             self.assertIn(marker, HTML)
 
-    def test_titles_and_descriptions_have_no_sentence_full_stop(self):
-        self.assertNotIn("。", HTML)
-
-    def test_stop_confirmation_does_not_hide_the_foreground_page(self):
+    def test_stop_confirmation_stays_in_foreground_page(self) -> None:
         self.assertNotIn("confirm(", HTML)
         self.assertIn("stopArmedUntil", HTML)
         self.assertIn("再次点击确认停止", HTML)
         self.assertIn("5 秒内再次点击确认停止", HTML)
 
-    def test_apple_visual_tokens_and_no_decorative_gradient_or_card_shadow(self):
-        for marker in ("--blue: #0066cc", "--ink: #1d1d1f",
-                       "--parchment: #f5f5f7", "SF Pro Display",
-                       "border-radius: 9999px"):
+    def test_hidden_or_closed_page_ends_session_and_port(self) -> None:
+        for marker in (
+            "visibilitychange", "pagehide", "beforeunload", "sendBeacon",
+            "/api/session/close", "当前 WebUI 会话和监听端口会自动结束",
+        ):
             self.assertIn(marker, HTML)
-        self.assertNotIn("linear-gradient", HTML)
-        self.assertNotIn("radial-gradient", HTML)
-        self.assertNotIn("box-shadow", HTML)
+        self.assertIn("hidden-during-open", HTML)
 
-    def test_foreground_session_constraint_is_visible_before_interaction(self):
-        self.assertIn("操作期间请保持页面在前台", HTML)
-        self.assertIn("visibilitychange", HTML)
-        self.assertIn("请从管理器模块页重新打开", HTML)
+    def test_session_heartbeat_only_runs_while_visible(self) -> None:
+        self.assertIn("document.visibilityState!=='visible'", HTML)
+        self.assertIn("/api/session/ping", HTML)
+        self.assertIn("clearInterval(heartbeat)", HTML)
+
+    def test_mobile_layout_and_dark_mode_are_present(self) -> None:
+        self.assertIn("@media(max-width:650px)", HTML)
+        self.assertIn("grid-template-columns:minmax(0,1fr)", HTML)
+        self.assertIn(".card{min-width:0", HTML)
+        self.assertIn("@media(prefers-color-scheme:dark)", HTML)
+        self.assertIn("env(safe-area-inset-bottom)", HTML)
+
+    def test_release_identity_is_visible(self) -> None:
+        self.assertIn("1.2.0 · 斓梦语", HTML)
+
+    def test_inline_javascript_has_valid_syntax(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is required")
+        script = HTML.split("<script>", 1)[1].split("</script>", 1)[0]
+        with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8") as handle:
+            handle.write(script)
+            handle.flush()
+            subprocess.run([node, "--check", handle.name], check=True, capture_output=True, text=True)
 
 
 if __name__ == "__main__":

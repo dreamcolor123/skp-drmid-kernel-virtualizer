@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -6,7 +5,6 @@
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
@@ -16,140 +14,42 @@
 #include <unistd.h>
 
 #include "control_ipc.h"
-#include "app_catalog.h"
 #include "device_id_fingerprint.h"
 #include "file_lifecycle.h"
 #include "kernel_module_kit_umbrella.h"
 #include "runtime_control.h"
 #include "runtime_profile.h"
-#include "target_config.h"
 
 namespace {
 
-constexpr size_t kWidevineIdBytes = 32;
+constexpr size_t kWidevineIdBytes = drmid::kWidevineDeviceUniqueIdBytes;
 constexpr size_t kSessionTokenBytes = 16;
 constexpr size_t kSessionTokenHexBytes = kSessionTokenBytes * 2;
 constexpr auto kSessionOpenGrace = std::chrono::seconds(15);
 constexpr auto kSessionIdleTimeout = std::chrono::seconds(12);
 constexpr auto kServerCloseDelay = std::chrono::milliseconds(80);
-static_assert(drmid::kTargetPackageLimit == drmid::kRuntimeTargetLimit);
 static_assert(kWidevineIdBytes == drmid::kVirtualIdBytes);
 
-std::string json_escape(const std::string& value) {
-    std::string escaped;
-    escaped.reserve(value.size() + 8);
-    for (const unsigned char ch : value) {
-        switch (ch) {
-            case '\\': escaped += "\\\\"; break;
-            case '"': escaped += "\\\""; break;
-            case '\n': escaped += "\\n"; break;
-            case '\r': escaped += "\\r"; break;
-            case '\t': escaped += "\\t"; break;
-            default:
-                if (ch >= 0x20) escaped.push_back(static_cast<char>(ch));
-                break;
-        }
-    }
-    return escaped;
-}
-
-std::string target_json_fields(const drmid::ResolvedTargetConfig& target) {
-    std::string json;
-    json += ",\"configured\":";
-    json += target.rule_mode == drmid::TargetRuleMode::kAll
-                ? "false"
-                : "true";
-    json += ",\"configured_package_count\":" +
-            std::to_string(target.packages.size());
-    json += ",\"configured_target_count\":" +
-            std::to_string(target.target_euids.size());
-    json += ",\"input_package_count\":" +
-            std::to_string(target.input_package_count);
-    json += ",\"duplicate_count\":" +
-            std::to_string(target.duplicate_package_count);
-    json += ",\"shared_uid\":";
-    json += target.shared_uid ? "true" : "false";
-    json += ",\"profile_domain\":\"" +
-            json_escape(target.profile_domain) + "\"";
-    json += ",\"package_status\":[";
-    for (size_t index = 0; index < target.packages.size(); ++index) {
-        if (index != 0) json.push_back(',');
-        const auto& item = target.packages[index];
-        json += "{\"package\":\"" + json_escape(item.package_name) +
-                "\",\"uid\":" + std::to_string(item.resolved_euid) +
-                ",\"status\":\"" +
-                (item.resolved_euid == 0 ? "unresolved" : "resolved") +
-                "\"}";
-    }
-    json += "]";
-    json += ",\"unresolved_packages\":[";
-    bool first = true;
-    for (const auto& item : target.packages) {
-        if (item.resolved_euid != 0) continue;
-        if (!first) json.push_back(',');
-        first = false;
-        json += "\"" + json_escape(item.package_name) + "\"";
-    }
-    json += "]";
-    return json;
-}
-
-std::string error_json(KModErr err,
-                       const char* stage,
-                       const drmid::ResolvedTargetConfig* target = nullptr) {
-    std::string json = std::string("{\"result\":") +
-                       std::to_string(to_num(err)) +
-                       ",\"stage\":\"" + stage + "\"";
-    if (target != nullptr) json += target_json_fields(*target);
-    json += "}";
-    return json;
+std::string error_json(KModErr err, const char* stage) {
+    return std::string("{\"result\":") + std::to_string(to_num(err)) +
+           ",\"stage\":\"" + stage + "\"}";
 }
 
 std::string status_json(const drmid::ControlIpcResponse& response,
-                        const drmid::ResolvedTargetConfig& target,
                         const char* module_private_dir) {
     std::string json = drmid::control_response_json(response);
     if (!json.empty() && json.back() == '}') json.pop_back();
-    json += target_json_fields(target);
     uint64_t device_fingerprint = 0;
     const KModErr fingerprint_err = drmid::read_original_id_fingerprint(
         module_private_dir, device_fingerprint);
     if (is_ok(fingerprint_err) && device_fingerprint != 0) {
         char text[17]{};
-        std::snprintf(text,
-                      sizeof(text),
-                      "%016" PRIx64,
-                      device_fingerprint);
+        std::snprintf(text, sizeof(text), "%016" PRIx64, device_fingerprint);
         json += ",\"device_fingerprint\":\"" + std::string(text) + "\"";
     } else {
         json += ",\"device_fingerprint\":\"\"";
     }
     json += "}";
-    return json;
-}
-
-std::string apps_json(const std::vector<drmid::DeviceAppInfo>& apps,
-                      bool truncated) {
-    std::string json = "{\"result\":0,\"truncated\":";
-    json += truncated ? "true" : "false";
-    json += ",\"count\":" + std::to_string(apps.size()) +
-            ",\"apps\":[";
-    for (size_t index = 0; index < apps.size(); ++index) {
-        if (index != 0) json.push_back(',');
-        const auto& app = apps[index];
-        json += "{\"package\":\"" + json_escape(app.package_name) +
-                "\",\"uid\":" + std::to_string(app.uid) +
-                ",\"label\":\"" + json_escape(app.label) +
-                "\",\"icon\":\"" + json_escape(app.icon_data_uri) +
-                "\",\"icon_source\":\"" +
-                json_escape(app.icon_source) +
-                "\",\"label_source\":\"" +
-                (app.label_from_package_manager ? "package-manager" :
-                                                   "package-fallback") +
-                "\",\"system\":" + (app.system ? "true" : "false") +
-                "}";
-    }
-    json += "]}";
     return json;
 }
 
@@ -193,25 +93,23 @@ bool read_full(int fd, uint8_t* buffer, size_t size) {
     return true;
 }
 
+bool fill_random_id(std::array<uint8_t, drmid::kVirtualStreamBytes>& out) {
+    out = {};
+    const int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    const bool ok = read_full(fd, out.data(), kWidevineIdBytes);
+    close(fd);
+    return ok;
+}
+
 std::string new_session_token() {
     std::array<uint8_t, kSessionTokenBytes> bytes{};
-    bool random_ok = false;
     const int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
-    if (fd >= 0) {
-        random_ok = read_full(fd, bytes.data(), bytes.size());
-        close(fd);
+    if (fd < 0 || !read_full(fd, bytes.data(), bytes.size())) {
+        if (fd >= 0) close(fd);
+        return {};
     }
-    if (!random_ok) {
-        const uint64_t now = static_cast<uint64_t>(
-            std::chrono::steady_clock::now().time_since_epoch().count());
-        const uint64_t pid = static_cast<uint64_t>(getpid());
-        for (size_t index = 0; index < bytes.size(); ++index) {
-            const uint64_t mixed = now ^ (pid << 17) ^
-                                   (static_cast<uint64_t>(index) *
-                                    0x9e3779b97f4a7c15ULL);
-            bytes[index] = static_cast<uint8_t>(mixed >> ((index % 8) * 8));
-        }
-    }
+    close(fd);
     static constexpr char kHex[] = "0123456789abcdef";
     std::string token;
     token.reserve(kSessionTokenHexBytes);
@@ -222,43 +120,19 @@ std::string new_session_token() {
     return token;
 }
 
-bool decode_virtual_id(const std::string& text,
-                       std::array<uint8_t, drmid::kVirtualStreamBytes>& out) {
+bool decode_virtual_id(
+    const std::string& text,
+    std::array<uint8_t, drmid::kVirtualStreamBytes>& out) {
     out = {};
     if (text.size() != kWidevineIdBytes * 2) return false;
-    for (size_t i = 0; i < kWidevineIdBytes; ++i) {
-        const int high = hex_nibble(text[i * 2]);
-        const int low = hex_nibble(text[i * 2 + 1]);
+    for (size_t index = 0; index < kWidevineIdBytes; ++index) {
+        const int high = hex_nibble(text[index * 2]);
+        const int low = hex_nibble(text[index * 2 + 1]);
         if (high < 0 || low < 0) return false;
-        out[i] = static_cast<uint8_t>((high << 4) | low);
+        out[index] = static_cast<uint8_t>((high << 4) | low);
     }
     return true;
 }
-
-bool active_targets_equal(const drmid::ControlIpcResponse& current,
-                          const drmid::ResolvedTargetConfig& target) {
-    if (current.target_count != target.target_euids.size() ||
-        current.target_count > drmid::kRuntimeTargetLimit) {
-        return false;
-    }
-    return std::equal(target.target_euids.begin(),
-                      target.target_euids.end(),
-                      current.target_euids);
-}
-
-class EnvironmentTargetScope {
-public:
-    explicit EnvironmentTargetScope(const std::string& packages) {
-        setenv("DRMID_TARGET_PACKAGES", packages.c_str(), 1);
-        unsetenv("DRMID_TARGET_PACKAGE");
-        unsetenv("DRMID_TARGET_LABEL");
-        unsetenv("DRMID_TARGET_UID");
-    }
-
-    ~EnvironmentTargetScope() {
-        unsetenv("DRMID_TARGET_PACKAGES");
-    }
-};
 
 class DrmidWebHandler : public kernel_module::WebUIHttpHandler {
 public:
@@ -266,15 +140,13 @@ public:
                          const char* module_private_dir,
                          uint32_t port) override {
         std::lock_guard<std::mutex> guard(lock_);
-        root_key_ = root_key != nullptr ? root_key : "";
-        private_dir_ = module_private_dir != nullptr
-                           ? module_private_dir
-                           : "";
+        (void)root_key;
+        private_dir_ = module_private_dir != nullptr ? module_private_dir : "";
         control_path_ =
             drmid::default_runtime_control_path(private_dir_.c_str());
         socket_path_ =
             drmid::default_control_socket_path(private_dir_.c_str());
-        printf("[drmid612] WebUI ready port=%u private_dir=%s\n",
+        printf("[drmid612] global HAL WebUI ready port=%u private_dir=%s\n",
                port,
                private_dir_.c_str());
     }
@@ -315,7 +187,6 @@ public:
         }
         if (!authenticate_session(connection, body)) return true;
         if (path == "/api/status") return handle_status(connection);
-        if (path == "/api/apps") return handle_apps(connection);
         if (path == "/api/apply") return handle_apply(connection, body);
         if (path == "/api/stop") return handle_stop(connection);
         kernel_module::webui::send_json(
@@ -325,14 +196,15 @@ public:
 
 private:
     bool ready() const {
-        return !root_key_.empty() && !private_dir_.empty() &&
-               !control_path_.empty() && !socket_path_.empty();
+        return !private_dir_.empty() && !control_path_.empty() &&
+               !socket_path_.empty();
     }
 
     bool authenticate_session(mg_connection* connection,
                               const std::string& body) {
         std::string token;
-        if (!form_value(body, "session_token", token, kSessionTokenHexBytes)) {
+        if (!form_value(body, "session_token", token,
+                        kSessionTokenHexBytes)) {
             kernel_module::webui::send_json(
                 connection, 401, "{\"result\":-1,\"stage\":\"session\"}");
             return false;
@@ -355,6 +227,11 @@ private:
             return true;
         }
         session_token_ = new_session_token();
+        if (session_token_.size() != kSessionTokenHexBytes) {
+            kernel_module::webui::send_json(
+                connection, 500, "{\"result\":-1,\"stage\":\"random\"}");
+            return true;
+        }
         session_open_ = true;
         session_last_activity_ = std::chrono::steady_clock::now();
         shutdown_requested_ = false;
@@ -362,14 +239,7 @@ private:
             connection,
             200,
             std::string("{\"result\":0,\"session_token\":\"") +
-                session_token_ +
-                "\",\"heartbeat_ms\":" +
-                std::to_string(
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        kSessionIdleTimeout)
-                        .count() /
-                    3) +
-                "}" );
+                session_token_ + "\",\"heartbeat_ms\":4000}");
         return true;
     }
 
@@ -377,15 +247,7 @@ private:
                              const std::string& body) {
         if (!authenticate_session(connection, body)) return true;
         kernel_module::webui::send_json(
-            connection,
-            200,
-            std::string("{\"result\":0,\"heartbeat_ms\":") +
-                std::to_string(
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        kSessionIdleTimeout)
-                        .count() /
-                    3) +
-                "}");
+            connection, 200, "{\"result\":0,\"heartbeat_ms\":4000}");
         return true;
     }
 
@@ -404,9 +266,7 @@ private:
     }
 
     void request_server_close_locked() {
-        if (shutdown_requested_ || server_ == nullptr || server_exiting_) {
-            return;
-        }
+        if (shutdown_requested_ || server_ == nullptr || server_exiting_) return;
         shutdown_requested_ = true;
         CivetServer* server = server_;
         std::thread([server] {
@@ -419,12 +279,11 @@ private:
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             std::lock_guard<std::mutex> guard(lock_);
-            if (server_ == nullptr || server_exiting_ ||
-                shutdown_requested_) {
+            if (server_ == nullptr || server_exiting_ || shutdown_requested_) {
                 continue;
             }
-            const auto now = std::chrono::steady_clock::now();
-            const auto idle = now - session_last_activity_;
+            const auto idle =
+                std::chrono::steady_clock::now() - session_last_activity_;
             const auto limit = session_open_ ? kSessionIdleTimeout
                                              : kSessionOpenGrace;
             if (idle >= limit) request_server_close_locked();
@@ -435,20 +294,18 @@ private:
         std::lock_guard<std::mutex> guard(lock_);
         if (!ready()) {
             kernel_module::webui::send_json(
-                connection,
-                500,
+                connection, 500,
                 error_json(KModErr::ERR_MODULE_PARAM, "prepare"));
             return true;
         }
         drmid::ControlIpcResponse response{};
-        KModErr err = drmid::send_control_ipc_request(
-            socket_path_.c_str(),
-            drmid::ControlIpcOperation::kStatus,
+        const KModErr err = drmid::send_control_ipc_request(
+            socket_path_.c_str(), drmid::ControlIpcOperation::kStatus,
             response);
         if (is_failed(err)) {
             pid_t daemon_pid = -1;
-            if (drmid::daemon_lock_owner_alive(
-                    private_dir_.c_str(), daemon_pid)) {
+            if (drmid::daemon_lock_owner_alive(private_dir_.c_str(),
+                                                daemon_pid)) {
                 kernel_module::webui::send_json(
                     connection,
                     425,
@@ -461,58 +318,21 @@ private:
             }
             return true;
         }
-        drmid::ResolvedTargetConfig target;
-        err = drmid::read_target_config_snapshot(
-            private_dir_.c_str(), target);
-        if (is_failed(err)) {
-            kernel_module::webui::send_json(
-                connection, 409, error_json(err, "target-status"));
-            return true;
-        }
         kernel_module::webui::send_json(
             connection,
             response.result == 0 ? 200 : 409,
-            status_json(response, target, private_dir_.c_str()));
-        return true;
-    }
-
-    bool handle_apps(mg_connection* connection) {
-        std::lock_guard<std::mutex> guard(lock_);
-        if (!ready()) {
-            kernel_module::webui::send_json(
-                connection,
-                500,
-                error_json(KModErr::ERR_MODULE_PARAM, "prepare"));
-            return true;
-        }
-        std::vector<drmid::DeviceAppInfo> apps;
-        bool truncated = false;
-        const KModErr err = drmid::enumerate_device_apps(
-            root_key_.c_str(), private_dir_.c_str(), apps, truncated);
-        if (is_failed(err)) {
-            kernel_module::webui::send_json(
-                connection, 503, error_json(err, "apps-enumerate"));
-            return true;
-        }
-        kernel_module::webui::send_json(
-            connection, 200, apps_json(apps, truncated));
+            status_json(response, private_dir_.c_str()));
         return true;
     }
 
     bool handle_stop(mg_connection* connection) {
         std::lock_guard<std::mutex> guard(lock_);
-        if (!ready()) {
-            kernel_module::webui::send_json(
-                connection,
-                500,
-                error_json(KModErr::ERR_MODULE_PARAM, "prepare"));
-            return true;
-        }
         drmid::ControlIpcResponse response{};
-        const KModErr err = drmid::send_control_ipc_request(
-            socket_path_.c_str(),
-            drmid::ControlIpcOperation::kStop,
-            response);
+        const KModErr err = ready()
+            ? drmid::send_control_ipc_request(
+                  socket_path_.c_str(), drmid::ControlIpcOperation::kStop,
+                  response)
+            : KModErr::ERR_MODULE_PARAM;
         kernel_module::webui::send_json(
             connection,
             is_failed(err) ? 503 : (response.result == 0 ? 200 : 409),
@@ -522,177 +342,108 @@ private:
     }
 
     bool handle_apply(mg_connection* connection, const std::string& body) {
-        if (body.size() > 8192) {
+        if (body.size() > 4096) {
             kernel_module::webui::send_json(
-                connection,
-                413,
+                connection, 413,
                 error_json(KModErr::ERR_MODULE_PARAM, "body-size"));
             return true;
         }
-        std::string packages;
         std::string mode;
-        std::string id_hex;
         std::string id_action;
-        if (!form_value(body,
-                        "packages",
-                        packages,
-                        drmid::kTargetPackagesFormMaxBytes) ||
-            !form_value(body, "mode", mode, 8) ||
+        std::string id_hex;
+        if (!form_value(body, "mode", mode, 8) ||
+            !form_value(body, "id_action", id_action, 8) ||
             !form_value(body, "id_hex", id_hex, kWidevineIdBytes * 2) ||
-            !form_value(body, "id_action", id_action, 8)) {
-            kernel_module::webui::send_json(
-                connection,
-                422,
-                error_json(KModErr::ERR_MODULE_PARAM, "form"));
-            return true;
-        }
-        if (packages.empty()) {
-            kernel_module::webui::send_json(
-                connection,
-                422,
-                error_json(KModErr::ERR_MODULE_PARAM, "packages-empty"));
-            return true;
-        }
-        if ((mode != "dry" && mode != "write") ||
+            (mode != "dry" && mode != "write") ||
             (id_action != "keep" && id_action != "derive" &&
-             id_action != "custom")) {
+             id_action != "random" && id_action != "custom")) {
             kernel_module::webui::send_json(
-                connection,
-                422,
-                error_json(KModErr::ERR_MODULE_PARAM, "mode-or-id-action"));
+                connection, 422,
+                error_json(KModErr::ERR_MODULE_PARAM, "form"));
             return true;
         }
 
         std::lock_guard<std::mutex> guard(lock_);
         if (!ready()) {
             kernel_module::webui::send_json(
-                connection,
-                500,
+                connection, 500,
                 error_json(KModErr::ERR_MODULE_PARAM, "prepare"));
             return true;
         }
-
         drmid::ControlIpcResponse current{};
         KModErr err = drmid::send_control_ipc_request(
-            socket_path_.c_str(),
-            drmid::ControlIpcOperation::kStatus,
+            socket_path_.c_str(), drmid::ControlIpcOperation::kStatus,
             current);
         if (is_failed(err) || current.result != 0) {
             kernel_module::webui::send_json(
-                connection,
-                503,
+                connection, 503,
                 is_failed(err) ? error_json(err, "status-connect")
                                : drmid::control_response_json(current));
             return true;
         }
 
-        drmid::ResolvedTargetConfig target;
-        {
-            EnvironmentTargetScope target_scope(packages);
-            err = drmid::load_or_resolve_target_config(
-                root_key_.c_str(), private_dir_.c_str(), target);
-        }
-        if (is_failed(err)) {
-            // No runtime record is written and no APPLY request is sent. The
-            // active kernel slot therefore remains the previous generation.
-            kernel_module::webui::send_json(
-                connection, 422, error_json(err, "target", &target));
-            return true;
-        }
-
-        drmid::RuntimeProfile profile;
-        err = drmid::load_or_create_runtime_profile(
-            false,
-            private_dir_.c_str(),
-            target.rule_mode,
-            target.target_euid,
-            target.profile_domain.empty()
-                ? nullptr
-                : target.profile_domain.c_str(),
-            profile);
+        drmid::ReplacementConfig persisted{};
+        err = drmid::read_runtime_control_file(
+            control_path_.c_str(), persisted);
         if (is_failed(err)) {
             kernel_module::webui::send_json(
-                connection, 500, error_json(err, "profile"));
+                connection, 409, error_json(err, "control-read"));
             return true;
         }
-
-        drmid::ReplacementConfig config;
-        config.mode = mode == "write"
-                          ? drmid::ReplacementMode::kWriteTest
-                          : drmid::ReplacementMode::kDryRun;
-        config.rule_mode = static_cast<uint32_t>(target.rule_mode);
-        config.target_count = target.target_euids.size();
-        if (config.target_count > drmid::kRuntimeTargetLimit) {
-            kernel_module::webui::send_json(
-                connection,
-                422,
-                error_json(KModErr::ERR_MODULE_PARAM, "target-count"));
-            return true;
-        }
-        std::copy(target.target_euids.begin(),
-                  target.target_euids.end(),
-                  config.target_euids.begin());
-        config.seed_generation = profile.seed_generation;
+        drmid::ReplacementConfig config = persisted;
+        config.mode = mode == "write" ? drmid::ReplacementMode::kWriteTest
+                                      : drmid::ReplacementMode::kDryRun;
         config.virtual_id_length = kWidevineIdBytes;
 
-        if (id_action == "keep") {
-            drmid::ReplacementConfig persisted;
-            err = drmid::read_runtime_control_file(
-                control_path_.c_str(), persisted);
-            if (is_failed(err) ||
-                persisted.profile_fingerprint != current.profile_fingerprint) {
+        if (id_action == "derive") {
+            drmid::RuntimeProfile profile;
+            err = drmid::load_or_create_runtime_profile(
+                false, private_dir_.c_str(), profile);
+            if (is_failed(err)) {
                 kernel_module::webui::send_json(
-                    connection,
-                    409,
-                    error_json(is_failed(err) ? err
-                                              : KModErr::ERR_MODULE_STORAGE_TYPE,
-                               "id-keep"));
+                    connection, 500, error_json(err, "profile"));
                 return true;
             }
-            config.virtual_id = persisted.virtual_id;
-            config.virtual_id_length = persisted.virtual_id_length;
-            config.profile_fingerprint = persisted.profile_fingerprint;
-            config.seed_generation = persisted.seed_generation;
-        } else if (id_action == "derive") {
             config.virtual_id = profile.virtual_stream;
-            config.profile_fingerprint = drmid::virtual_id_fingerprint(
-                config.virtual_id.data(), config.virtual_id_length);
-        } else if (decode_virtual_id(id_hex, config.virtual_id)) {
-            config.profile_fingerprint = drmid::virtual_id_fingerprint(
-                config.virtual_id.data(), config.virtual_id_length);
-        } else {
-            kernel_module::webui::send_json(
-                connection,
-                422,
-                error_json(KModErr::ERR_MODULE_PARAM, "id-hex"));
-            return true;
+            config.seed_generation = profile.seed_generation;
+        } else if (id_action == "random") {
+            if (!fill_random_id(config.virtual_id)) {
+                kernel_module::webui::send_json(
+                    connection, 500,
+                    error_json(KModErr::ERR_MODULE_STORAGE_READ, "random"));
+                return true;
+            }
+        } else if (id_action == "custom") {
+            if (!decode_virtual_id(id_hex, config.virtual_id)) {
+                kernel_module::webui::send_json(
+                    connection, 422,
+                    error_json(KModErr::ERR_MODULE_PARAM, "id-hex"));
+                return true;
+            }
         }
+        config.profile_fingerprint = drmid::virtual_id_fingerprint(
+            config.virtual_id.data(), config.virtual_id_length);
 
         const bool no_op =
-            !target.updated && active_targets_equal(current, target) &&
-            current.rule_mode == config.rule_mode &&
             current.replacement_mode == static_cast<uint32_t>(config.mode) &&
             current.profile_fingerprint == config.profile_fingerprint &&
             current.virtual_id_length == config.virtual_id_length;
         if (no_op) {
             kernel_module::webui::send_json(
-                connection,
-                200,
-                status_json(current, target, private_dir_.c_str()));
+                connection, 200,
+                status_json(current, private_dir_.c_str()));
             return true;
         }
-
-        const uint64_t base_generation =
-            std::max(current.config_generation, target.generation);
-        if (base_generation == std::numeric_limits<uint64_t>::max()) {
+        if (current.config_generation ==
+            std::numeric_limits<uint64_t>::max()) {
             kernel_module::webui::send_json(
-                connection,
-                409,
+                connection, 409,
                 error_json(KModErr::ERR_MODULE_PARAM, "generation"));
             return true;
         }
-        config.config_generation = base_generation + 1;
-        err = drmid::write_runtime_control_file(control_path_.c_str(), config);
+        config.config_generation = current.config_generation + 1;
+        err = drmid::write_runtime_control_file(
+            control_path_.c_str(), config);
         if (is_failed(err)) {
             kernel_module::webui::send_json(
                 connection, 500, error_json(err, "persist"));
@@ -701,20 +452,16 @@ private:
 
         drmid::ControlIpcResponse applied{};
         err = drmid::send_control_ipc_request(
-            socket_path_.c_str(),
-            drmid::ControlIpcOperation::kApply,
-            applied);
+            socket_path_.c_str(), drmid::ControlIpcOperation::kApply, applied);
         kernel_module::webui::send_json(
             connection,
             is_failed(err) ? 503 : (applied.result == 0 ? 200 : 409),
             is_failed(err) ? error_json(err, "apply-connect")
-                           : status_json(
-                                 applied, target, private_dir_.c_str()));
+                           : status_json(applied, private_dir_.c_str()));
         return true;
     }
 
     std::mutex lock_;
-    std::string root_key_;
     std::string private_dir_;
     std::string control_path_;
     std::string socket_path_;

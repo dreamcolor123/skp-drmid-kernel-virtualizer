@@ -15,27 +15,27 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <vector>
 
 #include "binder_hook_builder.h"
 #include "binder_ioctl_resolver.h"
 #include "control_ipc.h"
 #include "device_id_fingerprint.h"
 #include "file_lifecycle.h"
+#include "hal_identity.h"
 #include "kernel_module_kit_umbrella.h"
 #include "runtime_control.h"
 #include "runtime_profile.h"
 #include "startup_readiness.h"
-#include "target_config.h"
 
 namespace {
 
 constexpr int kSelfTestIoctlCount = 8;
-constexpr uint32_t kDeviceReplyLength = 32;
+constexpr uint32_t kDeviceReplyLength =
+    drmid::kWidevineDeviceUniqueIdBytes;
 constexpr uint32_t kDefaultBootWaitTimeoutMs = 180000;
-constexpr uint32_t kDefaultTargetWaitTimeoutMs = 120000;
 constexpr char kPrivateBootCleanupMarker[] =
     "webroot/drmid_boot_cleanup.flag";
-static_assert(drmid::kTargetPackageLimit == drmid::kRuntimeTargetLimit);
 static_assert(kDeviceReplyLength == drmid::kVirtualIdBytes);
 
 int open_binder_driver(std::string& selected_path) {
@@ -77,30 +77,26 @@ void print_resolution(const drmid::BinderIoctlResolution& resolution) {
 
 void print_parser_snapshot(const char* label,
                            const drmid::KernelCounterContext& s) {
-    printf("[drmid612] %s calls active/pre/post/bwr=%" PRIu64 "/%" PRIu64
-           "/%" PRIu64 "/%" PRIu64
-           " header pre-ok/fault=%" PRIu64 "/%" PRIu64
-           " post-ok/fault=%" PRIu64 "/%" PRIu64
-           " invalid=%" PRIu64 "\n",
+    const uint32_t config_slot = s.active_config_slot & 1U;
+    const auto& config = s.config_slots[config_slot];
+    const uint32_t hal_slot = s.active_hal_identity_slot & 1U;
+    const auto& hal = s.hal_identity_slots[hal_slot];
+    printf("[drmid612] %s calls active/pre/post/bwr=%" PRIu64
+           "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
+           " hal-gate=%" PRIu64 " identities=%u/%" PRIu64 "\n",
            label,
            s.active_calls,
            s.pre_calls,
            s.post_calls,
            s.bwr_calls,
-           s.pre_header_ok,
-           s.pre_header_faults,
-           s.post_header_ok,
-           s.post_header_faults,
-           s.invalid_consumed);
-    printf("[drmid612] %s streams write/read=%" PRIu64 "/%" PRIu64
-           " commands BC/BR=%" PRIu64 "/%" PRIu64
-           " transactions BC/BR=%" PRIu64 "/%" PRIu64
-           " boundary write/read=%" PRIu64 "/%" PRIu64
-           " copy-fault write/read=%" PRIu64 "/%" PRIu64
-           " capped write/read=%" PRIu64 "/%" PRIu64 "\n",
+           s.hal_gate_hits,
+           hal.count,
+           hal.generation);
+    printf("[drmid612] %s streams BC/BR=%" PRIu64 "/%" PRIu64
+           " transactions=%" PRIu64 "/%" PRIu64
+           " boundary=%" PRIu64 "/%" PRIu64
+           " copy-fault=%" PRIu64 "/%" PRIu64 "\n",
            label,
-           s.write_streams,
-           s.read_streams,
            s.bc_commands,
            s.br_commands,
            s.bc_transaction_commands,
@@ -108,155 +104,37 @@ void print_parser_snapshot(const char* label,
            s.write_boundary_errors,
            s.read_boundary_errors,
            s.write_copy_faults,
-           s.read_copy_faults,
-           s.write_capped,
-           s.read_capped);
-    printf("[drmid612] %s metadata ok/fault=%" PRIu64 "/%" PRIu64
-           " events=%" PRIu64
-           " pending push/pop/terminal=%" PRIu64 "/%" PRIu64
-           "/%" PRIu64 " miss/overflow/reclaim/oneway=%" PRIu64
-           "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
-           " lock-state/drops=%" PRIu64 "/%" PRIu64 "\n",
+           s.read_copy_faults);
+    printf("[drmid612] %s server request/correlated/reply-no-pending="
+           "%" PRIu64 "/%" PRIu64 "/%" PRIu64
+           " pending push/pop/miss/stale/drop=%" PRIu64 "/%" PRIu64
+           "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "\n",
            label,
-           s.transaction_metadata_ok,
-           s.transaction_metadata_faults,
-           s.event_write_index,
+           s.server_request_hits,
+           s.correlated_reply_candidates,
+           s.reply_without_pending,
            s.pending_pushes,
            s.pending_pops,
-           s.pending_terminal_pops,
            s.pending_misses,
-           s.pending_overflows,
-           s.pending_collisions,
-           s.pending_oneway_ignored,
-           s.pending_lock_state,
+           s.pending_generation_stale,
            s.pending_lock_drops);
-    printf("[drmid612] %s parcel prefix ok/fault=%" PRIu64 "/%" PRIu64
-           " token factory/plugin/device/unknown=%" PRIu64 "/%" PRIu64
-           "/%" PRIu64 "/%" PRIu64 "\n",
-           label,
-           s.parcel_prefix_ok,
-           s.parcel_prefix_faults,
-           s.parcel_factory_hits,
-           s.parcel_plugin_hits,
-           s.parcel_device_unique_id_hits,
-           s.parcel_unknown_tokens);
-    printf("[drmid612] %s reply candidate/header-ok/fault=%" PRIu64
-           "/%" PRIu64 "/%" PRIu64
-           " status ok/nonzero=%" PRIu64 "/%" PRIu64
-           " array valid/invalid=%" PRIu64 "/%" PRIu64
-           " content ok/fault=%" PRIu64 "/%" PRIu64 "\n",
-           label,
-           s.reply_candidates,
-           s.reply_header_copy_ok,
-           s.reply_header_copy_faults,
-           s.reply_status_ok,
-           s.reply_status_nonzero,
-           s.reply_array_valid,
-           s.reply_array_invalid,
-           s.reply_content_copy_ok,
-           s.reply_content_copy_faults);
-    printf("[drmid612] %s replacement candidate/mismatch/dry/write/fault="
+    printf("[drmid612] %s replacement candidate/dry/write/fault/copy-fault="
            "%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
            "/%" PRIu64
-           " copy_to_user-fault/access_vm-ok/fault=%" PRIu64
-           "/%" PRIu64 "/%" PRIu64
-           " page-pin-ok/fault/page-write-ok/fault=%" PRIu64
-           "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
-           " last access_vm/page_pin=%" PRId64 "/%" PRId64
-           " last-success request/flags/length=%" PRIu64 "/%08x/%d"
-           " config generation/mode/length=%" PRIu64
-           "/%u/%u\n",
+           " config slot/gen/seed/mode/length/fingerprint=%u/%" PRIu64
+           "/%" PRIu64 "/%u/%u/%016" PRIx64 "\n",
            label,
            s.replacement_candidates,
-           s.replacement_length_mismatch,
            s.replacement_dry_run_hits,
            s.replacement_write_ok,
            s.replacement_write_faults,
            s.replacement_copy_to_user_faults,
-           s.replacement_access_vm_ok,
-           s.replacement_access_vm_faults,
-           s.replacement_page_pin_ok,
-           s.replacement_page_pin_faults,
-           s.replacement_page_write_ok,
-           s.replacement_page_write_faults,
-           s.replacement_access_vm_last_result,
-           s.replacement_page_pin_last_result,
-           s.replacement_last_request_id,
-           s.replacement_last_reply_flags,
-           s.replacement_last_array_length,
-           s.config_generation,
-           s.replacement_mode,
-           s.virtual_id_length);
-    printf("[drmid612] %s rules check/match/miss/cred-fault=%" PRIu64
-           "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
-           " last-euid=%" PRIu64
-           " config generation/seed/mode/rule/targets/length/fingerprint="
-           "%" PRIu64 "/%" PRIu64 "/%u/%u/%u/%u/%016" PRIx64 "\n",
-           label,
-           s.rule_checks,
-           s.rule_matches,
-           s.rule_misses,
-           s.rule_cred_faults,
-           s.last_client_euid,
-           s.config_generation,
-           s.seed_generation,
-           s.replacement_mode,
-           s.rule_mode,
-           s.target_count,
-           s.virtual_id_length,
-           s.profile_fingerprint);
-    const uint32_t active_slot = s.active_config_slot & 1U;
-    const drmid::RuntimeConfigSlot& active_config =
-        s.config_slots[active_slot];
-    printf("[drmid612] %s runtime-config slot/switch/reject=%u/%" PRIu64
-           "/%" PRIu64
-           " generation/seed/mode/rule/targets/length/fingerprint="
-           "%" PRIu64 "/%" PRIu64 "/%u/%u/%u/%u/%016" PRIx64
-           " slot-generation=%" PRIu64 "/%" PRIu64 "\n",
-           label,
-           active_slot,
-           s.runtime_config_switches,
-           s.runtime_config_rejections,
-           active_config.config_generation,
-           active_config.seed_generation,
-           active_config.replacement_mode,
-           active_config.rule_mode,
-           active_config.target_count,
-           active_config.virtual_id_length,
-           active_config.profile_fingerprint,
-           s.config_slots[0].config_generation,
-           s.config_slots[1].config_generation);
-    printf("[drmid612] %s plugin create-request/reply-ok/fault=%" PRIu64
-           "/%" PRIu64 "/%" PRIu64
-           " map insert/reuse/reclaim/active=%" PRIu64 "/%" PRIu64
-           "/%" PRIu64 "/%" PRIu64
-           " lookup/hit/miss=%" PRIu64 "/%" PRIu64 "/%" PRIu64
-           " release/miss=%" PRIu64 "/%" PRIu64
-           " lock-state/drops=%" PRIu64 "/%" PRIu64
-           " last-create data/offsets/stage/status/object-off/type/handle="
-           "%" PRIu64 "/%" PRIu64 "/%u/%d/%u/%08x/%u\n",
-           label,
-           s.widevine_create_requests,
-           s.create_reply_ok,
-           s.create_reply_faults,
-           s.plugin_map_inserts,
-           s.plugin_map_reuses,
-           s.plugin_map_collisions,
-           s.plugin_map_active,
-           s.plugin_map_lookups,
-           s.plugin_map_hits,
-           s.plugin_map_misses,
-           s.plugin_map_releases,
-           s.plugin_map_release_misses,
-           s.plugin_lock_state,
-           s.plugin_lock_drops,
-           s.last_create_data_size,
-           s.last_create_offsets_size,
-           s.last_create_stage,
-           s.last_create_status,
-           s.last_create_object_offset,
-           s.last_create_object_type,
-           s.last_create_handle);
+           config_slot,
+           config.config_generation,
+           config.seed_generation,
+           config.replacement_mode,
+           config.virtual_id_length,
+           config.profile_fingerprint);
 }
 
 const char* event_kind_name(uint32_t kind) {
@@ -279,8 +157,6 @@ const char* event_kind_name(uint32_t kind) {
 
 const char* parcel_token_name(uint32_t kind) {
     switch (static_cast<drmid::ParcelTokenKind>(kind)) {
-        case drmid::ParcelTokenKind::kDrmFactory:
-            return "IDrmFactory";
         case drmid::ParcelTokenKind::kDrmPlugin:
             return "IDrmPlugin";
         case drmid::ParcelTokenKind::kNone:
@@ -344,8 +220,7 @@ void print_recent_events(const drmid::KernelCounterContext& snapshot,
                    " code=%u data=%" PRIu64 " token=%s@%u"
                    " prefix=%u parcel_flags=%08x request=%" PRIu64
                    " reply=%" PRIu64 "/%" PRIu64
-                   " status=%d array=%d@%u reply_flags=%08x"
-                   " uuid_off=%u plugin_handle=%u\n",
+                   " status=%d array=%d@%u reply_flags=%08x\n",
                    event.event_id,
                    event_kind_name(event.kind),
                    event.pid,
@@ -363,9 +238,7 @@ void print_recent_events(const drmid::KernelCounterContext& snapshot,
                    reply_status,
                    reply_array_length,
                    reply_array_offset,
-                   reply_parse_flags,
-                   event.factory_uuid_offset,
-                   event.plugin_handle);
+                   reply_parse_flags);
         }
     }
     printf("[drmid612] token snapshot retained=%zu deviceUniqueId=%zu\n",
@@ -389,7 +262,7 @@ void print_recent_events(const drmid::KernelCounterContext& snapshot,
                "data=%" PRIu64 " offsets=%" PRIu64
                " sender=%u/%u request=%" PRIu64
                " token=%s@%u prefix=%u parcel_flags=%08x"
-               " reply=%d/%d@%u/%08x uuid_off=%u plugin_handle=%u\n",
+               " reply=%d/%d@%u/%08x\n",
                event.event_id,
                event_kind_name(event.kind),
                event.pid,
@@ -410,9 +283,7 @@ void print_recent_events(const drmid::KernelCounterContext& snapshot,
                event.reply_status_code,
                event.reply_byte_array_length,
                event.reply_byte_array_offset,
-               event.reply_flags,
-               event.factory_uuid_offset,
-               event.plugin_handle);
+               event.reply_flags);
         ++printed;
     }
     printf("[drmid612] event snapshot printed=%zu correlated=%zu "
@@ -517,106 +388,25 @@ KModErr run_readonly_parser_probe(const char* root_key,
                to_string(fingerprint_err).c_str(),
                is_ok(fingerprint_err) && original_fingerprint != 0 ? 1U : 0U);
     }
-    drmid::ResolvedTargetConfig target;
-    KModErr err = KModErr::ERR_MODULE_STORAGE_NOT_FOUND;
-    uint32_t target_wait_ms = daemon_mode
-                                  ? kDefaultTargetWaitTimeoutMs
-                                  : 0U;
-    if (const char* wait_text = getenv("DRMID_TARGET_WAIT_MS")) {
-        const unsigned long requested = strtoul(wait_text, nullptr, 10);
-        if (requested <= 600000UL) {
-            target_wait_ms = static_cast<uint32_t>(requested);
-        }
-    }
-    uint32_t target_elapsed_ms = 0;
-    do {
-        err = drmid::load_or_resolve_target_config(
-            root_key, module_private_dir, target);
-        if (is_ok(err) ||
-            err != KModErr::ERR_MODULE_STORAGE_NOT_FOUND ||
-            target_elapsed_ms >= target_wait_ms) {
-            break;
-        }
-        if (target_elapsed_ms == 0) {
-            printf("[drmid612] waiting for Android package service; "
-                   "timeout=%u ms\n",
-                   target_wait_ms);
-        }
-        constexpr uint32_t kTargetPollMs = 500;
-        usleep(kTargetPollMs * 1000U);
-        target_elapsed_ms += kTargetPollMs;
-    } while (true);
-    if (is_failed(err)) {
-        printf("[drmid612] target configuration failed: %s\n",
-               to_string(err).c_str());
-        return err;
-    }
-    if (target_elapsed_ms != 0) {
-        printf("[drmid612] package service ready after %u ms\n",
-               target_elapsed_ms);
-    }
-    const drmid::TargetRuleMode rule_mode = target.rule_mode;
-    const uint32_t target_euid = target.target_euid;
-    const bool unconfigured_target =
-        rule_mode == drmid::TargetRuleMode::kAll &&
-        target.packages.empty() && target.target_euids.empty();
-    const char* rule_name = rule_mode == drmid::TargetRuleMode::kExactPackage
-                                ? "exact-package"
-                            : rule_mode == drmid::TargetRuleMode::kExactEuid
-                                ? "exact-euid"
-                                : "all";
-    printf("[drmid612] target config generation=%" PRIu64
-           " state=%s rule=%s packages=%zu targets=%zu first-package=%s "
-           "profile-domain=%s first-euid=%u shared-uid=%u duplicates=%zu\n",
-           target.generation,
-           target.created ? "created" : (target.updated ? "updated" : "loaded"),
-           rule_name,
-           target.packages.size(),
-           target.target_euids.size(),
-           target.package_name.empty() ? "-" : target.package_name.c_str(),
-           target.profile_domain.empty() ? "-" : target.profile_domain.c_str(),
-           target_euid,
-           target.shared_uid ? 1U : 0U,
-           target.duplicate_package_count);
-    if (unconfigured_target) {
-        printf("[drmid612] unconfigured bootstrap: no target package; "
-               "starting zero-target Dry-run for WebUI configuration\n");
-    }
-    const bool requested_write_test = getenv("DRMID_WRITE_TEST") != nullptr;
-    const bool write_test = requested_write_test && !unconfigured_target;
-    if (requested_write_test && unconfigured_target) {
-        printf("[drmid612] bootstrap ignored write-test request; "
-               "Dry-run is mandatory until a package resolves\n");
-    }
-    if (write_test && rule_mode == drmid::TargetRuleMode::kAll &&
-        getenv("DRMID_ALLOW_ALL_UIDS") == nullptr) {
-        printf("[drmid612] write-test requires DRMID_TARGET_UID or "
-               "DRMID_ALLOW_ALL_UIDS=1\n");
-        return KModErr::ERR_MODULE_PARAM;
-    }
+    KModErr err = KModErr::OK;
+    const bool write_test = getenv("DRMID_WRITE_TEST") != nullptr;
     drmid::RuntimeProfile profile;
     err = drmid::load_or_create_runtime_profile(
         getenv("DRMID_REGENERATE_SEED") != nullptr,
         module_private_dir,
-        rule_mode,
-        target_euid,
-        target.profile_domain.empty() ? nullptr : target.profile_domain.c_str(),
         profile);
     if (is_failed(err)) {
-        printf("[drmid612] runtime profile failed: %s\n",
+        printf("[drmid612] global runtime profile failed: %s\n",
                to_string(err).c_str());
         return err;
     }
     printf("[drmid612] crypto self-test=pass seed=%s generation=%" PRIu64
-           " profile_fingerprint=%016" PRIx64
-           " rule=%s target_euid=%u\n",
+           " global-profile-fingerprint=%016" PRIx64 "\n",
            profile.seed_created ? "created" : "loaded",
            profile.seed_generation,
-           profile.profile_fingerprint,
-           rule_name,
-           target_euid);
+           profile.profile_fingerprint);
     if (getenv("DRMID_CONFIG_ONLY") != nullptr) {
-        printf("[drmid612] config-only mode: persistent profile verified\n");
+        printf("[drmid612] config-only mode: global profile verified\n");
         return KModErr::OK;
     }
 
@@ -662,12 +452,9 @@ KModErr run_readonly_parser_probe(const char* root_key,
 
     drmid::TaskIdentityOffsets task_offsets;
     err = drmid::resolve_and_validate_task_identity_offsets(task_offsets);
-    printf("[drmid612] task identity offsets pid=%u tgid=%u cred=%u "
-           "cred.euid=%u result=%s\n",
+    printf("[drmid612] task identity offsets pid=%u tgid=%u result=%s\n",
            task_offsets.pid,
            task_offsets.tgid,
-           task_offsets.cred,
-           task_offsets.cred_euid,
            to_string(err).c_str());
     if (is_failed(err)) {
         close(binder_fd);
@@ -684,20 +471,13 @@ KModErr run_readonly_parser_probe(const char* root_key,
     drmid::ReplacementConfig config;
     config.mode = write_test ? drmid::ReplacementMode::kWriteTest
                              : drmid::ReplacementMode::kDryRun;
-    config.rule_mode = static_cast<uint32_t>(rule_mode);
-    config.target_count = target.target_euids.size();
-    if (config.target_count > drmid::kRuntimeTargetLimit) {
-        return KModErr::ERR_MODULE_PARAM;
-    }
-    std::copy(target.target_euids.begin(),
-              target.target_euids.end(),
-              config.target_euids.begin());
     config.virtual_id_length = kDeviceReplyLength;
-    config.config_generation = target.generation;
+    config.config_generation = 1;
     config.seed_generation = profile.seed_generation;
     config.virtual_id = profile.virtual_stream;
     config.profile_fingerprint = drmid::virtual_id_fingerprint(
         config.virtual_id.data(), config.virtual_id_length);
+
     std::string runtime_control_path;
     if (const char* override_path = getenv("DRMID_RUNTIME_CONTROL_FILE")) {
         runtime_control_path = override_path;
@@ -707,101 +487,83 @@ KModErr run_readonly_parser_probe(const char* root_key,
     }
     if (daemon_mode && !runtime_control_path.empty()) {
         bool migrated_control = false;
-        const KModErr migration_err = drmid::migrate_runtime_control_v1(
-            runtime_control_path.c_str(), config, migrated_control);
-        if (is_failed(migration_err)) {
-            printf("[drmid612] startup control migration rejected: %s\n",
-                   to_string(migration_err).c_str());
-        } else if (migrated_control) {
-            printf("[drmid612] startup control migrated v1-to-v2\n");
+        err = drmid::migrate_runtime_control_v2(
+            runtime_control_path.c_str(), migrated_control);
+        if (is_failed(err)) {
+            printf("[drmid612] runtime control v2-to-v3 migration rejected: %s\n",
+                   to_string(err).c_str());
+            close(binder_fd);
+            return err;
+        }
+        if (migrated_control) {
+            printf("[drmid612] runtime control migrated v2-to-v3 with ID preserved\n");
+        }
+        const size_t removed_legacy_state =
+            drmid::cleanup_legacy_target_state_after_global_migration(
+                module_private_dir);
+        if (removed_legacy_state != 0) {
+            printf("[drmid612] legacy target state removed files=%zu\n",
+                   removed_legacy_state);
         }
         drmid::ReplacementConfig persisted;
         const KModErr persisted_err = drmid::read_runtime_control_file(
             runtime_control_path.c_str(), persisted);
         if (is_ok(persisted_err)) {
-            const bool same_targets =
-                persisted.rule_mode == config.rule_mode &&
-                persisted.target_count == config.target_count &&
-                persisted.target_euids == config.target_euids;
-            if (same_targets &&
-                persisted.config_generation >= config.config_generation) {
-                config = persisted;
-            } else if (!same_targets) {
-                const uint64_t base_generation =
-                    std::max(persisted.config_generation,
-                             config.config_generation);
-                if (base_generation == std::numeric_limits<uint64_t>::max()) {
-                    close(binder_fd);
-                    return KModErr::ERR_MODULE_PARAM;
-                }
-                persisted.rule_mode = config.rule_mode;
-                persisted.target_count = config.target_count;
-                persisted.target_euids = config.target_euids;
-                persisted.config_generation = base_generation + 1;
-                const KModErr rebind_err = drmid::write_runtime_control_file(
-                    runtime_control_path.c_str(), persisted);
-                if (is_failed(rebind_err)) {
-                    close(binder_fd);
-                    return rebind_err;
-                }
-                config = persisted;
-                printf("[drmid612] startup control rebound to resolved target "
-                       "set generation=%" PRIu64 " targets=%u\n",
-                       config.config_generation,
-                       config.target_count);
-            }
             const uint64_t actual_fingerprint = drmid::virtual_id_fingerprint(
-                config.virtual_id.data(), config.virtual_id_length);
-            if (actual_fingerprint == 0) {
+                persisted.virtual_id.data(), persisted.virtual_id_length);
+            if (actual_fingerprint == 0 ||
+                actual_fingerprint != persisted.profile_fingerprint) {
                 close(binder_fd);
                 return KModErr::ERR_MODULE_STORAGE_TYPE;
             }
-            if (config.profile_fingerprint != actual_fingerprint) {
-                config.profile_fingerprint = actual_fingerprint;
-                const KModErr repair_err = drmid::write_runtime_control_file(
-                    runtime_control_path.c_str(), config);
-                if (is_failed(repair_err)) {
-                    close(binder_fd);
-                    return repair_err;
-                }
-                printf("[drmid612] runtime fingerprint normalized to active "
-                       "ID bytes\n");
-            }
-            printf("[drmid612] startup control restored generation=%" PRIu64
-                   " mode=%u rule=%u targets=%u fingerprint=%016" PRIx64
-                   "\n",
+            config = persisted;
+            printf("[drmid612] global control restored generation=%" PRIu64
+                   " mode=%u length=%u fingerprint=%016" PRIx64 "\n",
                    config.config_generation,
                    static_cast<uint32_t>(config.mode),
-                   config.rule_mode,
-                   config.target_count,
+                   config.virtual_id_length,
                    config.profile_fingerprint);
         } else if (persisted_err == KModErr::ERR_MODULE_STORAGE_NOT_FOUND) {
-            const KModErr persist_initial_err =
-                drmid::write_runtime_control_file(
-                    runtime_control_path.c_str(), config);
-            if (is_failed(persist_initial_err)) {
+            err = drmid::write_runtime_control_file(
+                runtime_control_path.c_str(), config);
+            if (is_failed(err)) {
                 close(binder_fd);
-                return persist_initial_err;
+                return err;
             }
-            printf("[drmid612] startup control initialized generation=%" PRIu64
-                   " targets=%u\n",
+            printf("[drmid612] global control initialized generation=%" PRIu64
+                   " mode=%u\n",
                    config.config_generation,
-                   config.target_count);
-        } else if (is_failed(persisted_err)) {
-            printf("[drmid612] startup control ignored: %s\n",
-                   to_string(persisted_err).c_str());
+                   static_cast<uint32_t>(config.mode));
+        } else {
+            close(binder_fd);
+            return persisted_err;
         }
     }
-    if (unconfigured_target) {
-        // A stale development control record must not turn the bootstrap
-        // generation into a write-to-all rule. Production starts with a
-        // zero-target Dry-run and waits for the first exact-package APPLY.
-        config.mode = drmid::ReplacementMode::kDryRun;
-        config.rule_mode = static_cast<uint32_t>(drmid::TargetRuleMode::kAll);
-        config.target_count = 0;
-        config.target_euids.fill(0);
+
+    drmid::HalIdentityConfig hal_identities;
+    std::vector<drmid::HalProcessInfo> hal_details;
+    err = drmid::discover_widevine_hal_identities(
+        "/proc", 1, hal_identities, &hal_details);
+    if (is_failed(err)) {
+        printf("[drmid612] Widevine HAL discovery failed: %s\n",
+               to_string(err).c_str());
+        close(binder_fd);
+        return err;
     }
-    printf("[drmid612] replacement mode=%s virtual_length=%u\n",
+    printf("[drmid612] Widevine HAL identities generation=%" PRIu64
+           " count=%u\n",
+           hal_identities.generation,
+           hal_identities.count);
+    for (const auto& hal : hal_details) {
+        printf("[drmid612] HAL tgid=%u uid=%u exe=%s binder=%s\n",
+               hal.tgid,
+               hal.uid,
+               hal.exe.c_str(),
+               hal.binder_path.c_str());
+    }
+
+    printf("[drmid612] replacement mode=%s virtual_length=%u backend="
+           "hal-outbound-binder\n",
            config.mode == drmid::ReplacementMode::kWriteTest
                ? "write-test"
                : "dry-run",
@@ -809,7 +571,11 @@ KModErr run_readonly_parser_probe(const char* root_key,
 
     drmid::CounterHookSession session;
     err = drmid::install_readonly_parser_hook(
-        resolution.ioctl_kaddr, task_offsets, config, session);
+        resolution.ioctl_kaddr,
+        task_offsets,
+        config,
+        hal_identities,
+        session);
     if (is_failed(err)) {
         printf("[drmid612] hook install failed: %s\n", to_string(err).c_str());
         close(binder_fd);
@@ -820,10 +586,10 @@ KModErr run_readonly_parser_probe(const char* root_key,
            reinterpret_cast<void*>(session.context_kaddr),
            drmid::kCounterContextAbi,
            sizeof(drmid::KernelCounterContext));
-    printf("[drmid612] Binder entry gate=installer-tgid,target-euid,"
-           "app-euid>=%u installer-tgid=%d\n",
-           10000U,
-           getpid());
+    printf("[drmid612] Binder entry gate=installer-tgid,widevine-hal-tgid "
+           "installer-tgid=%d hal-count=%u\n",
+           getpid(),
+           hal_identities.count);
 
     drmid::KernelCounterContext before{};
     drmid::KernelCounterContext after{};
@@ -893,15 +659,13 @@ KModErr run_readonly_parser_probe(const char* root_key,
                                     runtime_config.config_generation;
                                 printf("[drmid612] runtime control published "
                                        "generation=%" PRIu64
-                                       " slot=%u mode=%u rule=%u targets=%u "
-                                       "length=%u fingerprint=%016" PRIx64
+                                       " slot=%u mode=%u length=%u "
+                                       "fingerprint=%016" PRIx64
                                        "\n",
                                        runtime_config.config_generation,
                                        published_slot,
                                        static_cast<uint32_t>(
                                            runtime_config.mode),
-                                       runtime_config.rule_mode,
-                                       runtime_config.target_count,
                                        runtime_config.virtual_id_length,
                                        runtime_config.profile_fingerprint);
                             }
@@ -1170,8 +934,8 @@ void module_on_uninstall(const char*, const char* module_private_dir) {
 }
 
 SKROOT_MODULE_NAME("虚拟化DRM ID")
-SKROOT_MODULE_VERSION("1.1.3-rc2")
-SKROOT_MODULE_DESC("面向 Android 14+ / Linux 6.6与6.12 的多应用内核级 DRM ID 虚拟化，支持 WebUI 实时配置")
+SKROOT_MODULE_VERSION("1.2.0")
+SKROOT_MODULE_DESC("面向 Android 14+ / Linux 6.6与6.12 的 Widevine HAL 出站全局 DRM ID 内核虚拟化")
 SKROOT_MODULE_AUTHOR("斓梦语")
 SKROOT_MODULE_ID32("drmidKern612Probe20260728Alpha01")
 SKROOT_MODULE_ON_UNINSTALL(module_on_uninstall)

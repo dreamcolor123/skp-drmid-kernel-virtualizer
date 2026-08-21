@@ -1,188 +1,133 @@
 #!/usr/bin/env python3
-"""Offline fixtures for control protocol v2 and multi-package WebUI."""
+"""Fixtures for global Control IPC v3 and event-driven HAL lifecycle."""
 
 from __future__ import annotations
 
 import binascii
+import ctypes
 from pathlib import Path
 import struct
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTROL = (ROOT / "control_ipc.cpp").read_text(encoding="utf-8")
-IPC_MAGIC = 0x36314350494D5244
-IPC_VERSION = 2
-REQUEST_FORMAT = "<QIIQII"
-RESPONSE_FORMAT = "<QIi11Q5I32I3I"
+HEADER = (ROOT / "control_ipc.h").read_text(encoding="utf-8")
+SOURCE = (ROOT / "control_ipc.cpp").read_text(encoding="utf-8")
+WEB = (ROOT / "web_ui.cpp").read_text(encoding="utf-8")
+HTML = (ROOT / "webroot" / "index.html").read_text(encoding="utf-8")
+MODULE = (ROOT / "module_main.cpp").read_text(encoding="utf-8")
+MAGIC = 0x38314350494D5244
 
 
-def request(operation: int, request_id: int = 0x1122334455667788) -> bytes:
-    prefix = struct.pack("<QIIQ", IPC_MAGIC, IPC_VERSION, operation, request_id)
-    crc = binascii.crc32(prefix) & 0xFFFFFFFF
-    return struct.pack(
-        REQUEST_FORMAT, IPC_MAGIC, IPC_VERSION, operation, request_id, crc, 0
-    )
-
-
-def valid_request(data: bytes) -> bool:
-    if len(data) != 32:
-        return False
-    magic, version, operation, _, crc, reserved = struct.unpack(REQUEST_FORMAT, data)
-    return (
-        magic == IPC_MAGIC and version == IPC_VERSION and 1 <= operation <= 3
-        and reserved == 0 and crc == (binascii.crc32(data[:24]) & 0xFFFFFFFF)
-    )
-
-
-def response() -> bytes:
-    targets = [10373, 10455, 10500] + [0] * 29
-    fields = [
-        IPC_MAGIC, IPC_VERSION, 0,
-        0x1122334455667788, 3141, 0, 8, 2, 0xA07FC413AF94A3ED,
-        7, 1, 200, 100, 100,
-        1, 1, 2, 3, 32,
-        *targets,
-        0, 0, 0,
+class ResponseLayout(ctypes.Structure):
+    _fields_ = [
+        ("magic", ctypes.c_uint64), ("version", ctypes.c_uint32),
+        ("result", ctypes.c_int32), ("request_id", ctypes.c_uint64),
+        ("daemon_pid", ctypes.c_uint64), ("active_calls", ctypes.c_uint64),
+        ("generation", ctypes.c_uint64), ("seed_generation", ctypes.c_uint64),
+        ("fingerprint", ctypes.c_uint64), ("switches", ctypes.c_uint64),
+        ("rejections", ctypes.c_uint64), ("server_requests", ctypes.c_uint64),
+        ("correlated", ctypes.c_uint64), ("candidates", ctypes.c_uint64),
+        ("dry_hits", ctypes.c_uint64), ("write_ok", ctypes.c_uint64),
+        ("write_faults", ctypes.c_uint64), ("hal_generation", ctypes.c_uint64),
+        ("hal_switches", ctypes.c_uint64), ("hal_gate_hits", ctypes.c_uint64),
+        ("active_slot", ctypes.c_uint32), ("mode", ctypes.c_uint32),
+        ("length", ctypes.c_uint32), ("hal_state", ctypes.c_uint32),
+        ("hal_count", ctypes.c_uint32), ("hal_tgids", ctypes.c_uint32 * 4),
+        ("monitor_backend", ctypes.c_uint32),
+        ("monitor_wakeups", ctypes.c_uint32), ("crc32", ctypes.c_uint32),
     ]
-    raw = bytearray(struct.pack(RESPONSE_FORMAT, *fields))
-    struct.pack_into("<I", raw, 252, binascii.crc32(raw[:252]) & 0xFFFFFFFF)
-    return bytes(raw)
+
+
+def request(operation: int, request_id: int = 7) -> bytes:
+    prefix = struct.pack("<QIIQ", MAGIC, 3, operation, request_id)
+    return prefix + struct.pack("<II", binascii.crc32(prefix) & 0xFFFFFFFF, 0)
 
 
 class ControlIpcTest(unittest.TestCase):
-    def test_production_control_socket_blocks_instead_of_periodic_wakeup(self):
-        self.assertIn(
-            "const int poll_timeout_ms = max_runtime_ms == 0 ? -1 : kPollMs",
-            CONTROL,
-        )
-        self.assertIn("poll(&descriptor, 1, poll_timeout_ms)", CONTROL)
-        self.assertNotIn("poll(&descriptor, 1, kPollMs)", CONTROL)
-
-    def test_request_is_fixed_32_bytes(self) -> None:
-        self.assertEqual(struct.calcsize(REQUEST_FORMAT), 32)
-        self.assertEqual(len(request(1)), 32)
-
-    def test_request_crc_version_and_operations(self) -> None:
+    def test_request_is_fixed_32_bytes_and_crc_versioned(self) -> None:
         for operation in (1, 2, 3):
-            self.assertTrue(valid_request(request(operation)))
-        self.assertFalse(valid_request(request(0)))
-        old = bytearray(request(1))
-        struct.pack_into("<I", old, 8, 1)
-        self.assertFalse(valid_request(bytes(old)))
+            data = request(operation)
+            self.assertEqual(len(data), 32)
+            self.assertEqual(struct.unpack_from("<I", data, 24)[0], binascii.crc32(data[:24]) & 0xFFFFFFFF)
+        self.assertIn("kControlIpcVersion = 3", HEADER)
+        self.assertIn("DRMIPC18", HEADER)
 
     def test_request_corruption_fails_closed(self) -> None:
-        raw = bytearray(request(2))
-        raw[18] ^= 0x80
-        self.assertFalse(valid_request(bytes(raw)))
+        data = bytearray(request(1))
+        data[12] ^= 1
+        self.assertNotEqual(struct.unpack_from("<I", data, 24)[0], binascii.crc32(data[:24]) & 0xFFFFFFFF)
 
-    def test_response_is_fixed_264_bytes_with_crc(self) -> None:
-        raw = response()
-        self.assertEqual(struct.calcsize(RESPONSE_FORMAT), 264)
-        self.assertEqual(len(raw), 264)
-        self.assertEqual(
-            struct.unpack_from("<I", raw, 252)[0],
-            binascii.crc32(raw[:252]) & 0xFFFFFFFF,
-        )
-        self.assertEqual(raw[256:264], bytes(8))
+    def test_response_is_fixed_200_bytes_with_monitor_telemetry(self) -> None:
+        self.assertEqual(ctypes.sizeof(ResponseLayout), 200)
+        self.assertEqual(ResponseLayout.hal_tgids.offset, 172)
+        self.assertEqual(ResponseLayout.monitor_backend.offset, 188)
+        self.assertEqual(ResponseLayout.crc32.offset, 196)
+        self.assertIn("static_assert(sizeof(ControlIpcResponse) == 200)", HEADER)
 
-    def test_response_contains_target_count_and_euids(self) -> None:
-        fields = struct.unpack(RESPONSE_FORMAT, response())
-        self.assertEqual(fields[6], 8)  # config generation
-        self.assertEqual(fields[8], 0xA07FC413AF94A3ED)
-        self.assertEqual(fields[14:19], (1, 1, 2, 3, 32))
-        self.assertEqual(fields[19:22], (10373, 10455, 10500))
+    def test_protocol_contains_no_package_uid_or_rule_fields(self) -> None:
+        for retired in ("target_count", "target_euids", "rule_mode", "package_status", "shared_uid"):
+            self.assertNotIn(retired, HEADER + SOURCE + WEB)
 
-    def test_socket_path_respects_linux_sun_path_limit(self) -> None:
-        private_dir = "/data/adb/skroot/modules/drmidKern612"
-        path = private_dir + "/drmid_control_v2.sock"
-        self.assertLess(len(path.encode()), 108)
+    def test_daemon_uses_v3_record_and_socket(self) -> None:
+        self.assertIn('path += "drmid_control_v3.sock"', SOURCE)
+        self.assertIn("migrate_runtime_control_v2", MODULE)
+        self.assertIn("drmid_runtime_control_v3.bin", (ROOT / "runtime_control.cpp").read_text(encoding="utf-8"))
 
-    def test_webui_routes_and_assets_are_bundled(self) -> None:
-        source = (ROOT / "web_ui.cpp").read_text(encoding="utf-8")
-        page = (ROOT / "webroot" / "index.html").read_text(encoding="utf-8")
-        package = (ROOT / "package.py").read_text(encoding="utf-8")
-        for route in (
-            "/api/status", "/api/apply", "/api/stop",
-            "/api/apps",
-            "/api/session/open", "/api/session/ping", "/api/session/close",
-        ):
-            self.assertIn(route, source)
-            self.assertIn(route, page)
-        self.assertIn("DRMID_TARGET_PACKAGES", source)
+    def test_apply_reads_persisted_record_then_publishes_inactive_slot(self) -> None:
+        start = SOURCE.index("ControlIpcOperation::kApply")
+        read = SOURCE.index("read_runtime_control_file", start)
+        publish = SOURCE.index("publish_runtime_config", read)
+        self.assertLess(read, publish)
+        web_start = WEB.index("bool handle_apply")
+        persist = WEB.index("write_runtime_control_file", web_start)
+        ipc = WEB.index("ControlIpcOperation::kApply", persist)
+        self.assertLess(persist, ipc)
+
+    def test_stable_pidfd_backend_blocks_without_periodic_scan(self) -> None:
         for marker in (
-            "package_status", "unresolved_packages", "duplicate_count",
-            "shared_uid", "target_count",
+            "lifecycle_timeout_ms = -1",
+            "descriptors.push_back({pidfd, POLLIN, 0})",
+            "HalMonitorBackend::kPidfd",
+            "descriptors.data(), descriptors.size(), poll_timeout_ms",
         ):
-            self.assertIn(marker, source)
-            self.assertIn(marker, page)
-        self.assertIn('WEBROOT.rglob("*")', package)
+            self.assertIn(marker, SOURCE)
+        self.assertNotIn("usleep(3000", SOURCE)
+        self.assertNotIn("usleep(5000", SOURCE)
 
-    def test_webui_session_closes_on_hidden_page_and_has_timeout_fallback(self) -> None:
-        source = (ROOT / "web_ui.cpp").read_text(encoding="utf-8")
-        page = (ROOT / "webroot" / "index.html").read_text(encoding="utf-8")
+    def test_exit_clears_identity_before_rediscovery(self) -> None:
+        event = SOURCE.index("if (pidfd_event)")
+        clear = SOURCE.index("clear_monitored_identities", event)
+        discover = SOURCE.index("rediscover_hal_identities", clear)
+        self.assertLess(clear, discover)
+        self.assertIn("hal_identity_restarts", SOURCE)
+
+    def test_missing_hal_uses_bounded_backoff_and_fallback_is_low_frequency(self) -> None:
         for marker in (
-            "session_watchdog", "kSessionOpenGrace", "kSessionIdleTimeout",
-            "server->close()", "session_token", "onServerCreated",
-            "onBeforeServerExit",
+            "kHalRediscoveryInitialMs = 50",
+            "kHalRediscoveryMaximumMs = 2000",
+            "kHalProcFallbackPollMs = 5000",
+            "monitor.retry_ms * 2U",
         ):
-            self.assertIn(marker, source)
+            self.assertIn(marker, SOURCE)
+
+    def test_webui_routes_are_global_and_session_authenticated(self) -> None:
+        for route in ("/api/status", "/api/apply", "/api/stop", "/api/session/open", "/api/session/close"):
+            self.assertIn(route, WEB + HTML)
+        self.assertNotIn("/api/apps", WEB + HTML)
+        self.assertIn("session_token", WEB + HTML)
+
+    def test_hidden_page_closes_session_and_server(self) -> None:
+        for marker in ("visibilitychange", "pagehide", "sendBeacon", "request_server_close_locked", "kSessionIdleTimeout"):
+            self.assertIn(marker, WEB + HTML)
+
+    def test_status_json_exposes_hal_and_replacement_counters(self) -> None:
         for marker in (
-            "visibilitychange", "pagehide", "beforeunload", "sendBeacon",
-            "/api/session/ping", "/api/session/close", "sessionClosed",
+            "hal_identity_generation", "hal_monitor_backend",
+            "server_request_hits", "correlated_reply_candidates",
+            "write_ok", "hal_tgids",
         ):
-            self.assertIn(marker, page)
-
-    def test_webui_api_requests_carry_session_token(self) -> None:
-        page = (ROOT / "webroot" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("params.set('session_token',sessionToken)", page)
-        self.assertIn("api('/api/session/open','',false)", page)
-        self.assertIn("sessionToken=s.session_token", page)
-
-    def test_apply_order_is_resolve_persist_then_publish(self) -> None:
-        source = (ROOT / "web_ui.cpp").read_text(encoding="utf-8")
-        resolve = source.index("load_or_resolve_target_config")
-        persist = source.index("write_runtime_control_file", resolve)
-        publish = source.index("ControlIpcOperation::kApply", persist)
-        self.assertLess(resolve, persist)
-        self.assertLess(persist, publish)
-        self.assertIn("active kernel slot therefore remains", source)
-
-    def test_daemon_restores_v2_control_and_uses_v2_socket(self) -> None:
-        source = (ROOT / "module_main.cpp").read_text(encoding="utf-8")
-        lifecycle = (ROOT / "file_lifecycle.cpp").read_text(encoding="utf-8")
-        control = (ROOT / "control_ipc.cpp").read_text(encoding="utf-8")
-        self.assertIn("startup control migrated v1-to-v2", source)
-        self.assertIn("startup control rebound to resolved target", source)
-        self.assertIn("run_control_socket_server", source)
-        self.assertIn("drmid_runtime_control_v2.bin", lifecycle)
-        self.assertIn("drmid_target_config_v2.bin", lifecycle)
-        self.assertIn("drmid_control_v2.sock", control)
-
-    def test_package_lookup_has_early_boot_local_source(self) -> None:
-        source = (ROOT / "target_config.cpp").read_text(encoding="utf-8")
-        self.assertIn("/data/system/packages.list", source)
-        self.assertLess(
-            source.index("resolve_package_uid_from_packages_list"),
-            source.index("cmd package list packages -U"),
-        )
-        self.assertIn("complete target generation", source)
-
-    def test_fresh_start_bootstraps_without_a_package_name(self) -> None:
-        target = (ROOT / "target_config.cpp").read_text(encoding="utf-8")
-        module = (ROOT / "module_main.cpp").read_text(encoding="utf-8")
-        webui = (ROOT / "web_ui.cpp").read_text(encoding="utf-8")
-        page = (ROOT / "webroot" / "index.html").read_text(encoding="utf-8")
-        self.assertNotIn("kDefaultPackage", target + webui)
-        self.assertIn(
-            "desired.rule_mode = static_cast<uint32_t>(TargetRuleMode::kAll)",
-            target,
-        )
-        self.assertIn("unconfigured bootstrap: no target package", module)
-        self.assertIn("config.mode = drmid::ReplacementMode::kDryRun", module)
-        self.assertIn("config.target_count = 0", module)
-        self.assertIn('error_json(KModErr::ERR_MODULE_PARAM, "packages-empty")', webui)
-        self.assertNotIn(">com.sf.activity</textarea>", page)
+            self.assertIn(marker, SOURCE)
 
 
 if __name__ == "__main__":

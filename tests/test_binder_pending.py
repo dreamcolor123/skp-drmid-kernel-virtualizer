@@ -48,8 +48,8 @@ class EventLayout(ctypes.Structure):
         ("reply_byte_array_length", ctypes.c_int32),
         ("reply_byte_array_offset", ctypes.c_uint32),
         ("reply_flags", ctypes.c_uint32),
-        ("factory_uuid_offset", ctypes.c_uint32),
-        ("plugin_handle", ctypes.c_uint32),
+        ("reserved0", ctypes.c_uint32),
+        ("reserved1", ctypes.c_uint32),
     ]
 
 
@@ -58,6 +58,7 @@ class PendingFrameLayout(ctypes.Structure):
         ("request_event_id", ctypes.c_uint64),
         ("target", ctypes.c_uint64),
         ("data_size", ctypes.c_uint64),
+        ("hal_identity_generation", ctypes.c_uint64),
         ("code", ctypes.c_uint32),
         ("flags", ctypes.c_uint32),
         ("parcel_flags", ctypes.c_uint32),
@@ -84,6 +85,7 @@ class Frame:
     flags: int
     data_size: int
     parcel_flags: int = 0
+    hal_generation: int = 1
 
 
 @dataclass
@@ -156,7 +158,7 @@ class PendingModel:
         self.pushes += 1
         return True
 
-    def pop(self, task: int) -> int:
+    def pop(self, task: int, hal_generation: int = 1) -> int:
         base = self.bucket(task)
         slot = next(
             (entry for entry in self.slots[base : base + BUCKET_WAYS] if entry.task == task),
@@ -165,7 +167,8 @@ class PendingModel:
         if slot is None or not slot.frames:
             self.misses += 1
             return 0
-        event_id = slot.frames.pop().event_id
+        frame = slot.frames.pop()
+        event_id = frame.event_id if frame.hal_generation == hal_generation else 0
         self.pops += 1
         if not slot.frames:
             slot.task = 0
@@ -188,10 +191,11 @@ class BinderPendingTest(unittest.TestCase):
         self.assertEqual(EventLayout.kind.offset, 108)
         self.assertEqual(EventLayout.correlated_request_flags.offset, 128)
         self.assertEqual(EventLayout.reply_flags.offset, 148)
-        self.assertEqual(EventLayout.factory_uuid_offset.offset, 152)
-        self.assertEqual(EventLayout.plugin_handle.offset, 156)
-        self.assertEqual(ctypes.sizeof(PendingFrameLayout), 40)
-        self.assertEqual(ctypes.sizeof(PendingSlotLayout), 184)
+        self.assertEqual(EventLayout.reserved0.offset, 152)
+        self.assertEqual(EventLayout.reserved1.offset, 156)
+        self.assertEqual(ctypes.sizeof(PendingFrameLayout), 48)
+        self.assertEqual(PendingFrameLayout.hal_identity_generation.offset, 24)
+        self.assertEqual(ctypes.sizeof(PendingSlotLayout), 216)
         self.assertEqual(PendingSlotLayout.frames.offset, 24)
 
     def test_single_request_reply(self) -> None:
@@ -272,6 +276,17 @@ class BinderPendingTest(unittest.TestCase):
         model = PendingModel()
         self.assertEqual(model.pop(0xDEAD_0000), 0)
         self.assertEqual(model.misses, 1)
+
+    def test_hal_generation_change_invalidates_pending_reply(self) -> None:
+        model = PendingModel()
+        task = 0xFFFF_0000_9000
+        self.assertTrue(model.push(task, 90, 90, Frame(9, 0, 11, 0, 108)))
+        self.assertEqual(model.pop(task, hal_generation=2), 0)
+
+    def test_source_pushes_only_device_unique_id_requests(self) -> None:
+        self.assertEqual(HOOK_SOURCE.count("emit_pending_push(a, context_kaddr, task_offsets);"), 2)
+        self.assertGreaterEqual(HOOK_SOURCE.count("a->tbz(x11, 0"), 2)
+        self.assertIn("pending_generation_stale", HOOK_SOURCE)
 
 
 if __name__ == "__main__":

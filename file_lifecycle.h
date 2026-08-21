@@ -20,6 +20,8 @@ bool is_legacy_development_payload_name(const char* name);
 size_t cleanup_legacy_development_payloads(const char* public_tmp_dir);
 void cleanup_legacy_public_marker();
 void cleanup_legacy_public_artifacts();
+size_t cleanup_legacy_target_state_after_global_migration(
+    const char* module_private_dir);
 void cleanup_module_state_files(const char* module_private_dir);
 
 bool acquire_daemon_lock(const char* module_private_dir,

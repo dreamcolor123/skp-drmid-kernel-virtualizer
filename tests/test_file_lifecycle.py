@@ -270,6 +270,39 @@ class FileLifecycleTest(unittest.TestCase):
             with self.subTest(primitive=primitive):
                 self.assertIn(primitive, lifecycle)
 
+    def test_global_migration_removes_exact_legacy_target_files_only(self):
+        legacy = (
+            "drmid_runtime_control_v1.bin",
+            "drmid_runtime_control_v2.bin",
+            "drmid_target_config_v1.bin",
+            "drmid_target_config_v2.bin",
+            "drmid_label_helper.jar",
+        )
+        with tempfile.TemporaryDirectory(prefix="drmid-global-migration-") as temporary:
+            root = Path(temporary)
+            for name in legacy:
+                (root / name).write_text("legacy", encoding="utf-8")
+            retained = root / "drmid_target_config_v2.bin.bak"
+            retained.write_text("keep", encoding="utf-8")
+            protected = root / "protected"
+            protected.write_text("keep", encoding="utf-8")
+            symlink = root / "drmid_runtime_control_v1.bin.tmp"
+            symlink.symlink_to(protected)
+            result = self.run_harness("cleanup-global-migration", root)
+            self.assertEqual(result.stdout.strip(), str(len(legacy)))
+            self.assertTrue(retained.is_file())
+            self.assertTrue(symlink.is_symlink())
+            self.assertEqual(protected.read_text(encoding="utf-8"), "keep")
+
+    def test_uninstall_cleanup_knows_current_v3_state(self):
+        lifecycle = (ROOT / "file_lifecycle.cpp").read_text(encoding="utf-8")
+        for name in (
+            "drmid_control_v3.sock",
+            "drmid_runtime_control_v3.bin",
+            "drmid_runtime_control_v3.bin.tmp",
+        ):
+            self.assertIn(f'"{name}"', lifecycle)
+
     def test_legacy_public_marker_is_cleanup_only_not_boot_control(self):
         module = (ROOT / "module_main.cpp").read_text(encoding="utf-8")
         lifecycle = (ROOT / "file_lifecycle.cpp").read_text(encoding="utf-8")

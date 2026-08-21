@@ -4,7 +4,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -13,24 +12,11 @@
 namespace drmid {
 namespace {
 
-constexpr uint64_t kRuntimeControlV1Magic = 0x38304c54434d5244ULL;
-constexpr uint32_t kRuntimeControlV1Version = 1;
-
-struct RuntimeControlRecordV1 {
-    uint64_t magic;
-    uint32_t version;
-    uint32_t record_size;
-    uint64_t config_generation;
-    uint64_t seed_generation;
-    uint64_t profile_fingerprint;
-    uint32_t replacement_mode;
-    uint32_t rule_mode;
-    uint32_t target_euid;
-    uint32_t virtual_id_length;
-    uint8_t virtual_id[64];
-    uint32_t crc32;
-    uint32_t tail_reserved;
-};
+constexpr uint64_t kRuntimeControlV2Magic =
+    0x36314c54434d5244ULL; // DRMCTL16
+constexpr uint32_t kRuntimeControlV2Version = 2;
+constexpr uint32_t kRuntimeControlV2Bytes = 256;
+constexpr size_t kLegacyTargetLimit = 32;
 
 struct RuntimeControlRecordV2 {
     uint64_t magic;
@@ -43,18 +29,34 @@ struct RuntimeControlRecordV2 {
     uint32_t rule_mode;
     uint32_t target_count;
     uint32_t virtual_id_length;
-    uint32_t target_euids[kRuntimeTargetLimit];
+    uint32_t target_euids[kLegacyTargetLimit];
     uint8_t virtual_id[64];
     uint32_t crc32;
     uint32_t tail_reserved;
 };
 
-static_assert(sizeof(RuntimeControlRecordV1) == 128);
-static_assert(offsetof(RuntimeControlRecordV1, crc32) == 120);
-static_assert(sizeof(RuntimeControlRecordV2) == kRuntimeControlRecordBytes);
+struct RuntimeControlRecordV3 {
+    uint64_t magic;
+    uint32_t version;
+    uint32_t record_size;
+    uint64_t config_generation;
+    uint64_t seed_generation;
+    uint64_t profile_fingerprint;
+    uint32_t replacement_mode;
+    uint32_t virtual_id_length;
+    uint8_t virtual_id[64];
+    uint64_t reserved;
+    uint32_t crc32;
+    uint32_t tail_reserved;
+};
+
+static_assert(sizeof(RuntimeControlRecordV2) == kRuntimeControlV2Bytes);
 static_assert(offsetof(RuntimeControlRecordV2, target_euids) == 56);
 static_assert(offsetof(RuntimeControlRecordV2, virtual_id) == 184);
 static_assert(offsetof(RuntimeControlRecordV2, crc32) == 248);
+static_assert(sizeof(RuntimeControlRecordV3) == kRuntimeControlRecordBytes);
+static_assert(offsetof(RuntimeControlRecordV3, virtual_id) == 48);
+static_assert(offsetof(RuntimeControlRecordV3, crc32) == 120);
 
 uint32_t crc32(const void* data, size_t size) {
     uint32_t value = 0xffffffffU;
@@ -101,19 +103,19 @@ KModErr read_exact_record(const char* path, Record& record) {
     return KModErr::OK;
 }
 
-bool valid_target_set(uint32_t rule_mode,
-                      uint32_t target_count,
-                      const uint32_t* target_euids) {
-    if (rule_mode > 2 || target_count > kRuntimeTargetLimit) return false;
-    if (rule_mode == 0) {
-        if (target_count != 0) return false;
-    } else if (target_count == 0) {
+bool valid_legacy_target_set(uint32_t rule_mode,
+                             uint32_t target_count,
+                             const uint32_t* target_euids) {
+    if (rule_mode > 2 || target_count > kLegacyTargetLimit) return false;
+    if ((rule_mode == 0 && target_count != 0) ||
+        (rule_mode != 0 && target_count == 0)) {
         return false;
     }
-    for (size_t index = 0; index < kRuntimeTargetLimit; ++index) {
+    for (size_t index = 0; index < kLegacyTargetLimit; ++index) {
         if (index < target_count) {
             if (target_euids[index] == 0 ||
-                (index != 0 && target_euids[index - 1] >= target_euids[index])) {
+                (index != 0 &&
+                 target_euids[index - 1] >= target_euids[index])) {
                 return false;
             }
         } else if (target_euids[index] != 0) {
@@ -123,57 +125,49 @@ bool valid_target_set(uint32_t rule_mode,
     return true;
 }
 
-bool validate_v1_record(const RuntimeControlRecordV1& record) {
-    if (record.magic != kRuntimeControlV1Magic ||
-        record.version != kRuntimeControlV1Version ||
-        record.record_size != sizeof(record) ||
-        record.config_generation == 0 || record.seed_generation == 0 ||
-        record.replacement_mode >
-            static_cast<uint32_t>(ReplacementMode::kWriteTest) ||
-        record.rule_mode > 2 || record.virtual_id_length == 0 ||
-        record.virtual_id_length > sizeof(record.virtual_id) ||
-        record.tail_reserved != 0 ||
-        record.crc32 !=
-            crc32(&record, offsetof(RuntimeControlRecordV1, crc32))) {
-        return false;
-    }
-    return record.rule_mode == 0 ? record.target_euid == 0
-                                 : record.target_euid != 0;
+bool validate_v2_record(const RuntimeControlRecordV2& record) {
+    return record.magic == kRuntimeControlV2Magic &&
+           record.version == kRuntimeControlV2Version &&
+           record.record_size == sizeof(record) &&
+           record.config_generation != 0 && record.seed_generation != 0 &&
+           record.replacement_mode <=
+               static_cast<uint32_t>(ReplacementMode::kWriteTest) &&
+           valid_legacy_target_set(record.rule_mode,
+                                   record.target_count,
+                                   record.target_euids) &&
+           record.virtual_id_length == kWidevineDeviceUniqueIdBytes &&
+           record.tail_reserved == 0 &&
+           record.crc32 ==
+               crc32(&record, offsetof(RuntimeControlRecordV2, crc32));
 }
 
-bool validate_v2_record(const RuntimeControlRecordV2& record) {
+bool validate_v3_record(const RuntimeControlRecordV3& record) {
     return record.magic == kRuntimeControlMagic &&
            record.version == kRuntimeControlVersion &&
            record.record_size == sizeof(record) &&
            record.config_generation != 0 && record.seed_generation != 0 &&
            record.replacement_mode <=
                static_cast<uint32_t>(ReplacementMode::kWriteTest) &&
-           valid_target_set(record.rule_mode,
-                            record.target_count,
-                            record.target_euids) &&
-           record.virtual_id_length != 0 &&
-           record.virtual_id_length <= sizeof(record.virtual_id) &&
+           record.virtual_id_length == kWidevineDeviceUniqueIdBytes &&
+           record.profile_fingerprint != 0 && record.reserved == 0 &&
            record.tail_reserved == 0 &&
            record.crc32 ==
-               crc32(&record, offsetof(RuntimeControlRecordV2, crc32));
+               crc32(&record, offsetof(RuntimeControlRecordV3, crc32));
 }
 
 bool validate_config(const ReplacementConfig& config) {
     return config.config_generation != 0 && config.seed_generation != 0 &&
+           config.profile_fingerprint != 0 &&
            static_cast<uint32_t>(config.mode) <=
                static_cast<uint32_t>(ReplacementMode::kWriteTest) &&
-           valid_target_set(config.rule_mode,
-                            config.target_count,
-                            config.target_euids.data()) &&
-           config.virtual_id_length != 0 &&
-           config.virtual_id_length <= config.virtual_id.size();
+           config.virtual_id_length == kWidevineDeviceUniqueIdBytes;
 }
 
-KModErr write_record(const char* path, RuntimeControlRecordV2& record) {
+KModErr write_record(const char* path, RuntimeControlRecordV3& record) {
     record.magic = kRuntimeControlMagic;
     record.version = kRuntimeControlVersion;
     record.record_size = sizeof(record);
-    record.crc32 = crc32(&record, offsetof(RuntimeControlRecordV2, crc32));
+    record.crc32 = crc32(&record, offsetof(RuntimeControlRecordV3, crc32));
     const std::string temporary = std::string(path) + ".tmp";
     const int fd = open(temporary.c_str(),
                         O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW,
@@ -213,13 +207,26 @@ KModErr write_record(const char* path, RuntimeControlRecordV2& record) {
     return KModErr::OK;
 }
 
-std::string sibling_v1_path(const char* v2_path) {
-    std::string path(v2_path);
-    const size_t slash = path.find_last_of('/');
-    path = slash == std::string::npos ? std::string()
-                                      : path.substr(0, slash + 1);
-    path += "drmid_runtime_control_v1.bin";
-    return path;
+std::string sibling_path(const char* path, const char* file_name) {
+    std::string sibling(path);
+    const size_t slash = sibling.find_last_of('/');
+    sibling = slash == std::string::npos ? std::string()
+                                         : sibling.substr(0, slash + 1);
+    sibling += file_name;
+    return sibling;
+}
+
+void fill_config_from_v3(const RuntimeControlRecordV3& record,
+                         ReplacementConfig& config) {
+    config = {};
+    config.config_generation = record.config_generation;
+    config.seed_generation = record.seed_generation;
+    config.profile_fingerprint = record.profile_fingerprint;
+    config.mode = static_cast<ReplacementMode>(record.replacement_mode);
+    config.virtual_id_length = record.virtual_id_length;
+    std::memcpy(config.virtual_id.data(),
+                record.virtual_id,
+                record.virtual_id_length);
 }
 
 } // namespace
@@ -230,24 +237,12 @@ KModErr read_runtime_control_file(const char* path,
     if (path == nullptr || path[0] == '\0') {
         return KModErr::ERR_MODULE_PARAM;
     }
-    RuntimeControlRecordV2 record{};
+    RuntimeControlRecordV3 record{};
     RETURN_IF_ERROR(read_exact_record(path, record));
-    if (!validate_v2_record(record)) {
+    if (!validate_v3_record(record)) {
         return KModErr::ERR_MODULE_STORAGE_TYPE;
     }
-    config.config_generation = record.config_generation;
-    config.seed_generation = record.seed_generation;
-    config.profile_fingerprint = record.profile_fingerprint;
-    config.mode = static_cast<ReplacementMode>(record.replacement_mode);
-    config.rule_mode = record.rule_mode;
-    config.target_count = record.target_count;
-    config.virtual_id_length = record.virtual_id_length;
-    std::copy(record.target_euids,
-              record.target_euids + kRuntimeTargetLimit,
-              config.target_euids.begin());
-    std::memcpy(config.virtual_id.data(),
-                record.virtual_id,
-                record.virtual_id_length);
+    fill_config_from_v3(record, config);
     return KModErr::OK;
 }
 
@@ -256,66 +251,66 @@ KModErr write_runtime_control_file(const char* path,
     if (path == nullptr || path[0] == '\0' || !validate_config(config)) {
         return KModErr::ERR_MODULE_PARAM;
     }
-    RuntimeControlRecordV2 record{};
+    RuntimeControlRecordV3 record{};
     record.config_generation = config.config_generation;
     record.seed_generation = config.seed_generation;
     record.profile_fingerprint = config.profile_fingerprint;
     record.replacement_mode = static_cast<uint32_t>(config.mode);
-    record.rule_mode = config.rule_mode;
-    record.target_count = config.target_count;
     record.virtual_id_length = config.virtual_id_length;
-    std::copy(config.target_euids.begin(),
-              config.target_euids.end(),
-              record.target_euids);
     std::memcpy(record.virtual_id,
                 config.virtual_id.data(),
                 config.virtual_id_length);
     return write_record(path, record);
 }
 
-KModErr migrate_runtime_control_v1(const char* v2_path,
-                                   const ReplacementConfig& target_template,
-                                   bool& migrated) {
+KModErr migrate_runtime_control_v2(const char* v3_path, bool& migrated) {
     migrated = false;
-    if (v2_path == nullptr || v2_path[0] == '\0' ||
-        !validate_config(target_template)) {
+    if (v3_path == nullptr || v3_path[0] == '\0') {
         return KModErr::ERR_MODULE_PARAM;
     }
-    RuntimeControlRecordV2 existing{};
-    const KModErr v2_err = read_exact_record(v2_path, existing);
-    if (is_ok(v2_err)) {
-        return validate_v2_record(existing) ? KModErr::OK
-                                            : KModErr::ERR_MODULE_STORAGE_TYPE;
-    }
-    if (v2_err != KModErr::ERR_MODULE_STORAGE_NOT_FOUND) return v2_err;
 
-    RuntimeControlRecordV1 old_record{};
-    const KModErr v1_err =
-        read_exact_record(sibling_v1_path(v2_path).c_str(), old_record);
-    if (v1_err == KModErr::ERR_MODULE_STORAGE_NOT_FOUND) return KModErr::OK;
-    if (is_failed(v1_err)) return v1_err;
-    if (!validate_v1_record(old_record) ||
-        old_record.rule_mode != target_template.rule_mode ||
-        (old_record.rule_mode != 0 &&
-         (target_template.target_count != 1 ||
-          target_template.target_euids[0] != old_record.target_euid))) {
+    RuntimeControlRecordV3 current{};
+    const KModErr v3_err = read_exact_record(v3_path, current);
+    if (is_ok(v3_err)) {
+        return validate_v3_record(current) ? KModErr::OK
+                                           : KModErr::ERR_MODULE_STORAGE_TYPE;
+    }
+    if (v3_err != KModErr::ERR_MODULE_STORAGE_NOT_FOUND) return v3_err;
+
+    RuntimeControlRecordV2 legacy{};
+    const std::string legacy_path =
+        sibling_path(v3_path, "drmid_runtime_control_v2.bin");
+    const KModErr legacy_err = read_exact_record(legacy_path.c_str(), legacy);
+    if (legacy_err == KModErr::ERR_MODULE_STORAGE_NOT_FOUND) {
+        return KModErr::OK;
+    }
+    if (is_failed(legacy_err)) return legacy_err;
+    if (!validate_v2_record(legacy)) {
         return KModErr::ERR_MODULE_STORAGE_TYPE;
     }
 
-    ReplacementConfig converted = target_template;
+    ReplacementConfig converted{};
+    converted.config_generation = legacy.config_generation;
+    converted.seed_generation = legacy.seed_generation;
+    converted.profile_fingerprint = legacy.profile_fingerprint;
     converted.mode =
-        static_cast<ReplacementMode>(old_record.replacement_mode);
-    converted.config_generation =
-        std::max(target_template.config_generation,
-                 old_record.config_generation);
-    converted.seed_generation = old_record.seed_generation;
-    converted.profile_fingerprint = old_record.profile_fingerprint;
-    converted.virtual_id_length = old_record.virtual_id_length;
-    std::memset(converted.virtual_id.data(), 0, converted.virtual_id.size());
+        static_cast<ReplacementMode>(legacy.replacement_mode);
+    converted.virtual_id_length = legacy.virtual_id_length;
     std::memcpy(converted.virtual_id.data(),
-                old_record.virtual_id,
-                old_record.virtual_id_length);
-    RETURN_IF_ERROR(write_runtime_control_file(v2_path, converted));
+                legacy.virtual_id,
+                legacy.virtual_id_length);
+    RETURN_IF_ERROR(write_runtime_control_file(v3_path, converted));
+
+    ReplacementConfig verified{};
+    RETURN_IF_ERROR(read_runtime_control_file(v3_path, verified));
+    if (verified.config_generation != converted.config_generation ||
+        verified.seed_generation != converted.seed_generation ||
+        verified.profile_fingerprint != converted.profile_fingerprint ||
+        verified.mode != converted.mode ||
+        verified.virtual_id_length != converted.virtual_id_length ||
+        verified.virtual_id != converted.virtual_id) {
+        return KModErr::ERR_MODULE_STORAGE_READ;
+    }
     migrated = true;
     return KModErr::OK;
 }
@@ -326,7 +321,7 @@ std::string default_runtime_control_path(const char* module_private_dir) {
     }
     std::string path(module_private_dir);
     if (path.back() != '/') path.push_back('/');
-    path += "drmid_runtime_control_v2.bin";
+    path += "drmid_runtime_control_v3.bin";
     return path;
 }
 

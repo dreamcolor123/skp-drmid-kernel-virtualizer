@@ -52,18 +52,20 @@ class StartupTimingFixtureTest(unittest.TestCase):
         ):
             self.assertIn(marker, READINESS)
 
-    def test_readiness_chain_still_waits_for_boot_and_target_resolution(self):
+    def test_readiness_chain_waits_for_boot_then_discovers_hal(self):
         boot = SOURCE.index('"sys.boot_completed"')
         adaptive = SOURCE.index("wait_for_adaptive_startup_readiness", boot)
-        target = SOURCE.index("load_or_resolve_target_config", boot)
+        hal = SOURCE.index("discover_widevine_hal_identities", adaptive)
         self.assertLess(boot, adaptive)
-        self.assertLess(adaptive, target)
-        self.assertIn("kDefaultTargetWaitTimeoutMs = 120000", SOURCE)
+        self.assertLess(adaptive, hal)
+        self.assertNotIn("load_or_resolve_target_config", SOURCE)
+        self.assertNotIn("kDefaultTargetWaitTimeoutMs", SOURCE)
 
     def test_webui_distinguishes_starting_daemon_from_missing_daemon(self):
         self.assertIn("daemon_lock_owner_alive", WEB_UI)
         self.assertIn('\\"stage\\":\\"daemon-starting\\"', WEB_UI)
-        self.assertIn("服务正在准备", HTML)
+        self.assertIn("守护进程已启动，等待稳定切入", HTML)
+        self.assertIn("守护进程未连接", HTML)
 
     def test_parent_marks_detached_daemon_running_before_return(self):
         spawn = SOURCE.index("exec daemon spawned pid")
