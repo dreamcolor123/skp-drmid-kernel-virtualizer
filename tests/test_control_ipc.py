@@ -141,7 +141,11 @@ class ControlIpcTest(unittest.TestCase):
         self.assertIn("session_token", WEB + HTML)
 
     def test_hidden_page_closes_session_and_server(self) -> None:
-        for marker in ("visibilitychange", "pagehide", "sendBeacon", "request_server_close_locked", "kSessionIdleTimeout"):
+        for marker in (
+            "visibilitychange", "pagehide", "sendBeacon", "request_server_close_locked",
+            "kSessionIdleTimeout", "后台已退出，请重新从管理器打开",
+            "window.addEventListener('blur'", "document.addEventListener('freeze'",
+        ):
             self.assertIn(marker, WEB + HTML)
 
     def test_status_json_exposes_hal_and_replacement_counters(self) -> None:

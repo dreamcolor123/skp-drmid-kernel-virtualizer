@@ -81,8 +81,9 @@ generation 或当前 ID。
 
 WebUI 使用“DRM ID虚拟化”单一开关，并在小字中显示“当前状态：已开启/已关闭”，提供固定值、随机值、自定义三种
 ID 来源和 HAL 诊断。未选择 ID 来源时，APPLY 内部使用 keep，仅调整运行模式；
-显式选择来源时分别映射 derive、random、custom。页面退到后台、关闭或心跳超时
-后，会话和 WebUI 监听端口自动结束；再次调试需从管理器重新打开页面。
+显式选择来源时分别映射 derive、random、custom。页面隐藏、失焦、冻结、关闭或
+心跳失效后，会话和 WebUI 监听端口自动结束；当前页面随即进入不可恢复的整页
+“后台已退出，请重新从管理器打开”状态，不在页面恢复前台时自动重连。
 
 ## 构建与离线验收
 
@@ -93,7 +94,7 @@ python3 -m unittest discover -s tests -v
 python3 package.py
 ```
 
-当前离线结果：`159/159 PASS`，包含：
+当前离线结果：`162/162 PASS`，包含：
 
 - HAL method/interface/property 精确关联；
 - BC/BR stream边界与32字节回复改写；

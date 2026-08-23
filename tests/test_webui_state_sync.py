@@ -88,15 +88,34 @@ class WebUiStateSyncTest(unittest.TestCase):
     def test_hidden_or_closed_page_ends_session_and_port(self) -> None:
         for marker in (
             "visibilitychange", "pagehide", "beforeunload", "sendBeacon",
+            "window.addEventListener('blur'", "document.addEventListener('freeze'",
             "/api/session/close", "当前 WebUI 会话和监听端口会自动结束",
         ):
             self.assertIn(marker, HTML)
         self.assertIn("hidden-during-open", HTML)
 
+    def test_page_exit_is_terminal_and_replaces_the_entire_webui(self) -> None:
+        for marker in (
+            'id="sessionEnded"', "后台已退出，请重新从管理器打开",
+            "body.session-ended>:not(#sessionEnded):not(script)",
+            "document.body.classList.add('session-ended')",
+            "此页面不会自动重新连接", "window.addEventListener('pageshow'",
+        ):
+            self.assertIn(marker, HTML)
+        self.assertEqual(HTML.count("terminal=false"), 1)
+
+    def test_close_during_async_open_still_closes_the_new_session(self) -> None:
+        self.assertIn("if(terminal||document.visibilityState!=='visible')", HTML)
+        self.assertIn("closeSession(terminalReason||'hidden-during-open')", HTML)
+        self.assertIn("dispatchSessionClose(sessionToken,terminalReason)", HTML)
+        self.assertIn("queued=navigator.sendBeacon", HTML)
+        self.assertIn("if(!queued)", HTML)
+
     def test_session_heartbeat_only_runs_while_visible(self) -> None:
         self.assertIn("document.visibilityState!=='visible'", HTML)
         self.assertIn("/api/session/ping", HTML)
         self.assertIn("clearInterval(heartbeat)", HTML)
+        self.assertIn("closeSession('heartbeat-lost')", HTML)
 
     def test_mobile_layout_and_dark_mode_are_present(self) -> None:
         self.assertIn("@media(max-width:650px)", HTML)
