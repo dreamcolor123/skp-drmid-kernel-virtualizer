@@ -73,7 +73,7 @@
   <script>
   (()=>{
     'use strict';
-    let token='', heartbeat=0, closing=false, busy=false, stopArmedUntil=0;
+    let token='', heartbeat=0, closing=false, busy=false, formDirty=false, stopArmedUntil=0;
     const $=id=>document.getElementById(id);
     const form=(data={})=>new URLSearchParams({...data,session_token:token}).toString();
     async function post(path,data={},keepalive=false){
@@ -86,7 +86,7 @@
     function idAction(){const x=document.querySelector('input[name="idAction"]:checked');return x?x.value:'keep'}
     function monitorName(v){return v===1?'pidfd 事件驱动':v===2?'procfs 低频兼容':'等待 HAL'}
     function validCustom(){return idAction()!=='custom'||/^[0-9a-fA-F]{64}$/.test($('idHex').value.trim())}
-    function syncControls(){const on=$('modeToggle').checked;$('modeChoice').textContent='DRM ID虚拟化';$('modeChoiceHint').textContent=on?'当前状态：已开启 · 全局替换 Binder 与 TEE 已识别的 32 字节 deviceUniqueId。':'当前状态：已关闭 · 只观察请求链路，不修改返回内容。';$('customField').hidden=idAction()!=='custom';$('applyBtn').disabled=!token||busy||!validCustom();$('idHint').textContent=validCustom()?'内容只写入模块私有配置。':'需要恰好 64 个十六进制字符。'}
+    function syncControls(){const on=$('modeToggle').checked,customValid=validCustom();$('modeChoice').textContent='DRM ID虚拟化';$('modeChoiceHint').textContent=on?'当前状态：已开启 · 全局替换 Binder 与 TEE 已识别的 32 字节 deviceUniqueId。':'当前状态：已关闭 · 只观察请求链路，不修改返回内容。';$('customField').hidden=idAction()!=='custom';$('applyBtn').disabled=!token||busy;$('applyBtn').setAttribute('aria-disabled',String(!token||busy));$('applyBtn').title=!token?'请从管理器重新打开 WebUI':busy?'正在发布设置…':customValid?'':'自定义 ID 需要恰好 64 个十六进制字符。';$('idHint').textContent=customValid?'内容只写入模块私有配置。':'需要恰好 64 个十六进制字符。'}
     function render(s){
       const teeActive=s.tee_backend_state===1,ready=s.result===0&&(s.hal_count>0||teeActive);
       pill(ready?'ok':s.result===0?'warn':'bad',ready?'Hook 运行中':s.result===0?'等待 Widevine 后端':'守护进程异常');
@@ -100,15 +100,16 @@
       $('requests').textContent=String((s.server_request_hits??0)+(s.tee_op9_candidates??0));$('writes').textContent=String((s.write_ok??0)+(s.tee_op9_write_ok??0));
       $('halNotice').className='notice '+(ready?'good':'warn');
       $('halNotice').textContent=ready?`全局调用者过滤：关闭。HAL ${s.hal_count||0} 个，TEE TA ${s.tee_widevine_object_count||0} 个；其他 Trusted App 不进入替换。`:'Widevine 身份链尚未建立，Hook 保持原始返回。';
-      $('modeToggle').checked=s.mode===1;
+      if(!formDirty&&!busy)$('modeToggle').checked=s.mode===1;
       $('diagnostics').textContent=JSON.stringify(s,null,2);setAction('状态已同步');syncControls();
     }
     async function status(){if(!token||closing)return;try{render(await post('/api/status'))}catch(e){const p=e.payload||{};pill(p.stage==='daemon-starting'?'warn':'bad',p.stage==='daemon-starting'?'守护进程已启动，等待稳定切入':'守护进程未连接');$('diagnostics').textContent=JSON.stringify(p,null,2);setAction(p.stage||e.message)}}
-    async function apply(){if(busy||!validCustom())return;busy=true;syncControls();setAction('正在发布设置…');try{const s=await post('/api/apply',{mode:modeValue(),id_action:idAction(),id_hex:$('idHex').value.trim()});render(s);document.querySelectorAll('input[name="idAction"]').forEach(x=>x.checked=false);$('idHex').value='';setAction('设置已原子发布')}catch(e){setAction('应用失败：'+((e.payload&&e.payload.stage)||e.message))}finally{busy=false;syncControls()}}
+    async function apply(){if(busy)return;if(!token){setAction('页面会话已关闭，请从管理器重新打开 WebUI');syncControls();return}if(!validCustom()){setAction('请先填写 64 位十六进制自定义 ID');$('idHex').focus();syncControls();return}busy=true;syncControls();setAction('正在发布设置…');try{const s=await post('/api/apply',{mode:modeValue(),id_action:idAction(),id_hex:$('idHex').value.trim()});formDirty=false;render(s);document.querySelectorAll('input[name="idAction"]').forEach(x=>x.checked=false);$('idHex').value='';setAction('设置已原子发布')}catch(e){if(e.status===401){token='';formDirty=false}setAction('应用失败：'+((e.payload&&e.payload.stage)||e.message))}finally{busy=false;syncControls()}}
     async function stop(){const now=Date.now();if(now>stopArmedUntil){stopArmedUntil=now+5000;$('stopBtn').textContent='再次点击确认停止';$('stopHint').hidden=false;setTimeout(()=>{if(Date.now()>stopArmedUntil){$('stopBtn').textContent='停止模块';$('stopHint').hidden=true}},5100);return}busy=true;syncControls();try{await post('/api/stop');pill('bad','模块已停止');setAction('模块已停止');$('stopBtn').disabled=true}catch(e){setAction('停止失败：'+((e.payload&&e.payload.stage)||e.message))}finally{busy=false;syncControls()}}
-    async function closeSession(reason){if(closing)return;closing=true;clearInterval(heartbeat);if(!token)return;const body=form({reason});token='';try{if(navigator.sendBeacon)navigator.sendBeacon('/api/session/close',new Blob([body],{type:'application/x-www-form-urlencoded;charset=UTF-8'}));else fetch('/api/session/close',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body,keepalive:true})}catch(_){}}
-    async function open(){try{const s=await post('/api/session/open');token=s.session_token||'';if(!token)throw new Error('session-token');if(closing||document.visibilityState!=='visible'){closing=false;closeSession('hidden-during-open');return}heartbeat=setInterval(async()=>{if(document.visibilityState!=='visible'){closeSession('hidden');return}try{await post('/api/session/ping')}catch(_){pill('bad','WebUI 会话已断开');clearInterval(heartbeat)}},s.heartbeat_ms||4000);syncControls();await status()}catch(e){pill('bad','WebUI 会话创建失败');setAction(e.message)}}
-    $('modeToggle').addEventListener('change',syncControls);document.querySelectorAll('input[name="idAction"]').forEach(x=>x.addEventListener('change',syncControls));$('idHex').addEventListener('input',syncControls);$('applyBtn').addEventListener('click',apply);$('refreshBtn').addEventListener('click',status);$('stopBtn').addEventListener('click',stop);
+    async function closeSession(reason){if(closing)return;closing=true;clearInterval(heartbeat);if(!token){syncControls();return}const body=form({reason});token='';syncControls();try{if(navigator.sendBeacon)navigator.sendBeacon('/api/session/close',new Blob([body],{type:'application/x-www-form-urlencoded;charset=UTF-8'}));else fetch('/api/session/close',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body,keepalive:true})}catch(_){} }
+    async function open(){try{const s=await post('/api/session/open');token=s.session_token||'';if(!token)throw new Error('session-token');if(closing||document.visibilityState!=='visible'){closing=false;closeSession('hidden-during-open');return}heartbeat=setInterval(async()=>{if(document.visibilityState!=='visible'){closeSession('hidden');return}try{await post('/api/session/ping')}catch(_){pill('bad','WebUI 会话已断开');clearInterval(heartbeat);token='';syncControls()}},s.heartbeat_ms||4000);syncControls();await status()}catch(e){token='';syncControls();pill('bad','WebUI 会话创建失败');setAction(e.message)}}
+    function markDirty(){formDirty=true;syncControls()}
+    $('modeToggle').addEventListener('change',markDirty);document.querySelectorAll('input[name="idAction"]').forEach(x=>x.addEventListener('change',markDirty));$('idHex').addEventListener('input',markDirty);$('applyBtn').addEventListener('click',apply);$('refreshBtn').addEventListener('click',status);$('stopBtn').addEventListener('click',stop);
     document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')closeSession('hidden')});window.addEventListener('pagehide',()=>closeSession('pagehide'));window.addEventListener('beforeunload',()=>closeSession('unload'));open();
   })();
   </script>

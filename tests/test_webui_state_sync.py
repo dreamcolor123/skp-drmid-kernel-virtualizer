@@ -54,7 +54,15 @@ class WebUiStateSyncTest(unittest.TestCase):
 
     def test_apply_disabled_until_session_and_valid_form(self) -> None:
         self.assertIn('id="applyBtn" class="btn primary" type="button" disabled', HTML)
-        self.assertIn("!token||busy||!validCustom()", HTML)
+        self.assertIn("!token||busy", HTML)
+        self.assertIn("setAttribute('aria-disabled'", HTML)
+        self.assertIn("请先填写 64 位十六进制自定义 ID", HTML)
+
+    def test_mode_toggle_does_not_disable_apply_or_get_overwritten_by_stale_status(self) -> None:
+        self.assertIn("formDirty=false", HTML)
+        self.assertIn("function markDirty(){formDirty=true;syncControls()}", HTML)
+        self.assertIn("if(!formDirty&&!busy)$('modeToggle').checked=s.mode===1", HTML)
+        self.assertIn("$('modeToggle').addEventListener('change',markDirty)", HTML)
 
     def test_status_restores_mode_without_exposing_id_bytes(self) -> None:
         self.assertIn("$('modeToggle').checked=s.mode===1", HTML)
