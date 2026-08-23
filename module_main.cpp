@@ -27,6 +27,8 @@
 #include "runtime_control.h"
 #include "runtime_profile.h"
 #include "startup_readiness.h"
+#include "tee_firmware_identity.h"
+#include "tee_hook_builder.h"
 
 namespace {
 
@@ -135,6 +137,32 @@ void print_parser_snapshot(const char* label,
            config.replacement_mode,
            config.virtual_id_length,
            config.profile_fingerprint);
+    size_t controller_count = 0;
+    size_t tee_object_count = 0;
+    for (const uint64_t object : s.tee_controller_objects) {
+        if (object != 0) ++controller_count;
+    }
+    for (const uint64_t object : s.tee_widevine_objects) {
+        if (object != 0) ++tee_object_count;
+    }
+    printf("[drmid612] %s TEE state/controllers/objects=%u/%zu/%zu "
+           "invoke/free=%" PRIu64 "/%" PRIu64
+           " loader/hit/fault=%" PRIu64 "/%" PRIu64 "/%" PRIu64
+           " op9/dry/write/fault=%" PRIu64 "/%" PRIu64 "/%" PRIu64
+           "/%" PRIu64 "\n",
+           label,
+           s.tee_backend_state,
+           controller_count,
+           tee_object_count,
+           s.tee_invoke_calls,
+           s.tee_free_calls,
+           s.tee_loader_candidates,
+           s.tee_loader_identity_hits,
+           s.tee_loader_identity_faults,
+           s.tee_op9_candidates,
+           s.tee_op9_dry_run_hits,
+           s.tee_op9_write_ok,
+           s.tee_op9_write_faults);
 }
 
 const char* event_kind_name(uint32_t kind) {
@@ -422,6 +450,34 @@ KModErr run_readonly_parser_probe(const char* root_key,
         return KModErr::ERR_MODULE_SYMBOL_NOT_MATCH_LINUX_VER;
     }
 
+    drmid::TeeFirmwareIdentity tee_firmware;
+    drmid::TeeHookResolution tee_resolution;
+    KModErr tee_firmware_err = KModErr::ERR_MODULE_SYMBOL_NOT_MATCH_LINUX_VER;
+    KModErr tee_resolution_err = KModErr::ERR_MODULE_SYMBOL_NOT_MATCH_LINUX_VER;
+    if (kernel_version.rfind("6.12.", 0) == 0) {
+        if (const char* firmware_path =
+                getenv("DRMID_WIDEVINE_FIRMWARE_PATH")) {
+            tee_firmware_err = drmid::read_tee_firmware_identity(
+                firmware_path, 1, tee_firmware);
+        } else {
+            tee_firmware_err = drmid::discover_tee_firmware_identity(
+                1, tee_firmware);
+        }
+        if (is_ok(tee_firmware_err)) {
+            tee_resolution_err = drmid::resolve_and_validate_tee_hooks(
+                tee_resolution);
+        }
+    }
+    printf("[drmid612] Widevine TEE firmware=%s available=%u size=%" PRIu64
+           " result=%s symbols=%s invoke=%p free=%p\n",
+           tee_firmware.path.empty() ? "-" : tee_firmware.path.c_str(),
+           is_ok(tee_firmware_err) ? 1U : 0U,
+           tee_firmware.file_size,
+           to_string(tee_firmware_err).c_str(),
+           to_string(tee_resolution_err).c_str(),
+           reinterpret_cast<void*>(tee_resolution.invoke_kaddr),
+           reinterpret_cast<void*>(tee_resolution.free_kaddr));
+
     std::string binder_path;
     const int binder_fd = open_binder_driver(binder_path);
     if (binder_fd < 0) {
@@ -463,7 +519,7 @@ KModErr run_readonly_parser_probe(const char* root_key,
 
     if (getenv("DRMID_RESOLVE_ONLY") != nullptr) {
         printf("[drmid612] resolver-only mode: profile and task identity "
-               "verified, no Hook installed\n");
+               "verified, TEE profile checked, no Hook installed\n");
         close(binder_fd);
         return KModErr::OK;
     }
@@ -563,7 +619,7 @@ KModErr run_readonly_parser_probe(const char* root_key,
     }
 
     printf("[drmid612] replacement mode=%s virtual_length=%u backend="
-           "hal-outbound-binder\n",
+           "hal-binder+widevine-smcinvoke-global\n",
            config.mode == drmid::ReplacementMode::kWriteTest
                ? "write-test"
                : "dry-run",
@@ -590,6 +646,21 @@ KModErr run_readonly_parser_probe(const char* root_key,
            "installer-tgid=%d hal-count=%u\n",
            getpid(),
            hal_identities.count);
+
+    bool tee_hooks_installed = false;
+    if (is_ok(tee_firmware_err) && is_ok(tee_resolution_err)) {
+        const KModErr tee_install_err = drmid::install_global_tee_hooks(
+            tee_resolution, tee_firmware, session);
+        tee_hooks_installed = is_ok(tee_install_err);
+        printf("[drmid612] caller-global TEE hooks install=%s "
+               "invoke=%p free=%p euid-filter=absent\n",
+               to_string(tee_install_err).c_str(),
+               reinterpret_cast<void*>(tee_resolution.invoke_kaddr),
+               reinterpret_cast<void*>(tee_resolution.free_kaddr));
+    } else {
+        printf("[drmid612] caller-global TEE backend inactive; "
+               "Binder backend remains active\n");
+    }
 
     drmid::KernelCounterContext before{};
     drmid::KernelCounterContext after{};
@@ -785,6 +856,15 @@ KModErr run_readonly_parser_probe(const char* root_key,
         }
     }
 
+    if (tee_hooks_installed) {
+        const KModErr tee_remove_err = drmid::remove_global_tee_hooks(session);
+        if (is_failed(tee_remove_err)) {
+            printf("[drmid612] TEE hook removal failed; RW context retained: %s\n",
+                   to_string(tee_remove_err).c_str());
+            close(binder_fd);
+            return tee_remove_err;
+        }
+    }
     const KModErr remove_err = drmid::remove_readonly_parser_hook(session);
     if (is_failed(remove_err)) {
         // session keeps its context address on failure; see the removal helper.
@@ -804,7 +884,7 @@ KModErr run_readonly_parser_probe(const char* root_key,
 } // namespace
 
 int skroot_module_main(const char* root_key, const char* module_private_dir) {
-    printf("[drmid612] DRM ID Binder virtualizer probe starting; private_dir=%s\n",
+    printf("[drmid612] DRM ID global virtualizer probe starting; private_dir=%s\n",
            module_private_dir != nullptr ? module_private_dir : "");
     const bool foreground = getenv("DRMID_FOREGROUND") != nullptr;
     const bool exec_daemon = getenv("DRMID_EXEC_DAEMON") != nullptr;
@@ -934,8 +1014,8 @@ void module_on_uninstall(const char*, const char* module_private_dir) {
 }
 
 SKROOT_MODULE_NAME("虚拟化DRM ID")
-SKROOT_MODULE_VERSION("1.2.0")
-SKROOT_MODULE_DESC("面向 Android 14+ / Linux 6.6与6.12 的 Widevine HAL 出站全局 DRM ID 内核虚拟化")
+SKROOT_MODULE_VERSION("1.3.0-rc1")
+SKROOT_MODULE_DESC("面向 Android 14+ / Linux 6.6与6.12 的 Widevine Binder 与 TEE 直连全局 DRM ID 内核虚拟化")
 SKROOT_MODULE_AUTHOR("斓梦语")
 SKROOT_MODULE_ID32("drmidKern612Probe20260728Alpha01")
 SKROOT_MODULE_ON_UNINSTALL(module_on_uninstall)

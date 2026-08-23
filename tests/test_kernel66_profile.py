@@ -7,7 +7,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CAPTURE = ROOT / "tests" / "fixtures" / "kernel66_profile.txt"
+WORKSPACE = ROOT.parents[1]
+CAPTURE = WORKSPACE / "artifacts" / "kernel66-sdk-probe-20260801" / "采集.txt"
 RESOLVER = (ROOT / "binder_ioctl_resolver.cpp").read_text(encoding="utf-8")
 HEADER = (ROOT / "binder_ioctl_resolver.h").read_text(encoding="utf-8")
 MODULE = (ROOT / "module_main.cpp").read_text(encoding="utf-8")
@@ -46,6 +47,8 @@ def supported(kernel: str, backend: str) -> bool:
 class Kernel66ProfileTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        if not CAPTURE.is_file():
+            raise unittest.SkipTest("6.6 device capture is not part of the source repository")
         cls.capture = CAPTURE.read_text(encoding="utf-8")
 
     def test_single_probe_was_complete(self) -> None:

@@ -43,7 +43,9 @@ static_assert(sizeof(ControlIpcRequest) == 32);
 static_assert(offsetof(ControlIpcRequest, crc32) == 24);
 static_assert(offsetof(ControlIpcResponse, hal_tgids) == 172);
 static_assert(offsetof(ControlIpcResponse, hal_monitor_backend) == 188);
-static_assert(offsetof(ControlIpcResponse, crc32) == 196);
+static_assert(offsetof(ControlIpcResponse, tee_backend_state) == 196);
+static_assert(offsetof(ControlIpcResponse, tee_firmware_size) == 216);
+static_assert(offsetof(ControlIpcResponse, crc32) == 344);
 
 constexpr uint32_t kHalRediscoveryInitialMs = 50;
 constexpr uint32_t kHalRediscoveryMaximumMs = 2000;
@@ -357,6 +359,33 @@ void fill_response(const KernelCounterContext& snapshot,
     response.hal_monitor_backend =
         static_cast<uint32_t>(monitor.backend);
     response.hal_monitor_wakeups = monitor.wakeups;
+    response.tee_backend_state = snapshot.tee_backend_state;
+    for (const uint64_t object : snapshot.tee_controller_objects) {
+        if (object != 0) ++response.tee_controller_count;
+    }
+    for (const uint64_t object : snapshot.tee_widevine_objects) {
+        if (object != 0) ++response.tee_widevine_object_count;
+    }
+    for (const uint64_t state : snapshot.tee_fallback_states) {
+        if (state != 0) ++response.tee_fallback_state_count;
+    }
+    response.tee_firmware_size = snapshot.tee_firmware_identity.file_size;
+    response.tee_firmware_generation =
+        snapshot.tee_firmware_identity.generation;
+    response.tee_invoke_calls = snapshot.tee_invoke_calls;
+    response.tee_free_calls = snapshot.tee_free_calls;
+    response.tee_loader_candidates = snapshot.tee_loader_candidates;
+    response.tee_loader_identity_hits = snapshot.tee_loader_identity_hits;
+    response.tee_loader_identity_faults = snapshot.tee_loader_identity_faults;
+    response.tee_controller_adds = snapshot.tee_controller_adds;
+    response.tee_ta_adds = snapshot.tee_ta_adds;
+    response.tee_op9_candidates = snapshot.tee_op9_candidates;
+    response.tee_op9_dry_run_hits = snapshot.tee_op9_dry_run_hits;
+    response.tee_op9_write_ok = snapshot.tee_op9_write_ok;
+    response.tee_op9_write_faults = snapshot.tee_op9_write_faults;
+    response.tee_state_full = snapshot.tee_state_full;
+    response.tee_address_clears = snapshot.tee_address_clears;
+    response.tee_fallback_matches = snapshot.tee_fallback_matches;
     response.crc32 =
         crc32(&response, offsetof(ControlIpcResponse, crc32));
 }
@@ -381,7 +410,7 @@ std::string default_control_socket_path(const char* module_private_dir) {
     }
     std::string path(module_private_dir);
     if (path.back() != '/') path.push_back('/');
-    path += "drmid_control_v3.sock";
+    path += "drmid_control_v4.sock";
     return path;
 }
 
@@ -635,12 +664,12 @@ KModErr send_control_ipc_request(const char* socket_path,
 }
 
 std::string control_response_json(const ControlIpcResponse& response) {
-    char text[2048]{};
+    char text[4096]{};
     std::snprintf(
         text,
         sizeof(text),
         "{\"result\":%d,\"daemon_pid\":%" PRIu64
-        ",\"backend\":\"hal-outbound-binder\""
+        ",\"backend\":\"hal-binder+widevine-smcinvoke-global\""
         ",\"active_calls\":%" PRIu64
         ",\"generation\":%" PRIu64
         ",\"seed_generation\":%" PRIu64
@@ -658,6 +687,26 @@ std::string control_response_json(const ControlIpcResponse& response) {
         ",\"hal_gate_hits\":%" PRIu64
         ",\"hal_state\":%u,\"hal_count\":%u"
         ",\"hal_monitor_backend\":%u,\"hal_monitor_wakeups\":%u"
+        ",\"tee_backend_state\":%u"
+        ",\"tee_controller_count\":%u"
+        ",\"tee_widevine_object_count\":%u"
+        ",\"tee_fallback_state_count\":%u"
+        ",\"tee_firmware_size\":%" PRIu64
+        ",\"tee_firmware_generation\":%" PRIu64
+        ",\"tee_invoke_calls\":%" PRIu64
+        ",\"tee_free_calls\":%" PRIu64
+        ",\"tee_loader_candidates\":%" PRIu64
+        ",\"tee_loader_identity_hits\":%" PRIu64
+        ",\"tee_loader_identity_faults\":%" PRIu64
+        ",\"tee_controller_adds\":%" PRIu64
+        ",\"tee_ta_adds\":%" PRIu64
+        ",\"tee_op9_candidates\":%" PRIu64
+        ",\"tee_op9_dry_run_hits\":%" PRIu64
+        ",\"tee_op9_write_ok\":%" PRIu64
+        ",\"tee_op9_write_faults\":%" PRIu64
+        ",\"tee_state_full\":%" PRIu64
+        ",\"tee_address_clears\":%" PRIu64
+        ",\"tee_fallback_matches\":%" PRIu64
         ",\"slot\":%u,\"mode\":%u,\"length\":%u,\"hal_tgids\":[",
         response.result,
         response.daemon_pid,
@@ -680,6 +729,26 @@ std::string control_response_json(const ControlIpcResponse& response) {
         response.hal_count,
         response.hal_monitor_backend,
         response.hal_monitor_wakeups,
+        response.tee_backend_state,
+        response.tee_controller_count,
+        response.tee_widevine_object_count,
+        response.tee_fallback_state_count,
+        response.tee_firmware_size,
+        response.tee_firmware_generation,
+        response.tee_invoke_calls,
+        response.tee_free_calls,
+        response.tee_loader_candidates,
+        response.tee_loader_identity_hits,
+        response.tee_loader_identity_faults,
+        response.tee_controller_adds,
+        response.tee_ta_adds,
+        response.tee_op9_candidates,
+        response.tee_op9_dry_run_hits,
+        response.tee_op9_write_ok,
+        response.tee_op9_write_faults,
+        response.tee_state_full,
+        response.tee_address_clears,
+        response.tee_fallback_matches,
         response.active_slot,
         response.replacement_mode,
         response.virtual_id_length);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the reproducible SKRoot Pro 1.2.0 HAL-global module archive."""
+"""Build the reproducible SKRoot Pro 1.3.0-rc1 global module archive."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ SO = ROOT / "libs" / "arm64-v8a" / "libmodule_drmid_kernel_virtualizer.so"
 DAEMON = ROOT / "libs" / "arm64-v8a" / "drmid_probe_runner"
 WEBROOT = ROOT / "webroot"
 DIST = ROOT / "dist"
-VERSION = "1.2.0"
+VERSION = "1.3.0-rc1"
 DISPLAY_NAME = "虚拟化DRM ID"
 AUTHOR = "斓梦语"
 ZIP = DIST / f"module_drmid_kernel_virtualizer-{VERSION}-arm64-run-once.zip"
@@ -87,13 +87,15 @@ def verify_release_inputs() -> None:
     )
 
     hook = (ROOT / "binder_hook_builder.cpp").read_text(encoding="utf-8")
+    tee_hook = (ROOT / "tee_hook_builder.cpp").read_text(encoding="utf-8")
+    tee_firmware = (ROOT / "tee_firmware_identity.cpp").read_text(encoding="utf-8")
     context = (ROOT / "kernel_context.h").read_text(encoding="utf-8")
     hook_header = (ROOT / "binder_hook_builder.h").read_text(encoding="utf-8")
     require_markers(
         "HAL Binder backend",
         hook + context + hook_header,
         (
-            "kCounterContextAbi = 18",
+            "kCounterContextAbi = 19",
             "kHalIdentityLimit = 4",
             "kWidevineDeviceUniqueIdBytes = 32",
             "emit_hal_identity_gate",
@@ -108,6 +110,39 @@ def verify_release_inputs() -> None:
             "active_hal_identity_slot",
             "pending_generation_stale",
             "a->stlr(w10, ptr(x9))",
+        ),
+    )
+    require_markers(
+        "caller-global Widevine TEE backend",
+        tee_hook + tee_firmware + context + module_source,
+        (
+            '"si_object_do_invoke"',
+            '"free_si_object"',
+            "kTeeControllerObjectLimit = 16",
+            "kTeeWidevineObjectLimit = 32",
+            "kTeeFallbackStateLimit = 16",
+            "emit_fallback_consume_ready",
+            "emit_table_contains",
+            "a->casal",
+            "copy_from_user",
+            "copy_to_user",
+            "O_NOFOLLOW",
+            '"/vendor/firmware_mnt/image/widevine.mbn"',
+            "hal-binder+widevine-smcinvoke-global",
+        ),
+    )
+    reject_markers(
+        "TEE caller filters",
+        tee_hook,
+        (
+            "target_euids",
+            "cred_euid",
+            "sender_euid",
+            "get_task_struct_tgid_offset",
+            "get_task_struct_cred_offset",
+            "emit_hal_identity_gate",
+            "kmalloc",
+            "kzalloc",
         ),
     )
     reject_markers(
@@ -128,7 +163,7 @@ def verify_release_inputs() -> None:
             "#if 0",
         ),
     )
-    executable_hook = re.sub(r"/\*.*?\*/", "", hook, flags=re.DOTALL)
+    executable_hook = re.sub(r"/\*.*?\*/", "", hook + tee_hook, flags=re.DOTALL)
     executable_hook = re.sub(r"//.*", "", executable_hook)
     if re.search(r"\b[wx]18\b", executable_hook):
         raise SystemExit("ARM64 x18 shadow-call-stack register used by hook emitter")
@@ -186,7 +221,7 @@ def verify_release_inputs() -> None:
             "DRM ID虚拟化",
             "当前状态：已开启",
             "当前状态：已关闭",
-            "HAL 出站 Binder",
+            "Binder + TEE 直连（全局）",
             f">{VERSION} · {AUTHOR}<",
         ),
     )
@@ -210,7 +245,7 @@ def verify_release_inputs() -> None:
         (
             "cleanup_legacy_target_state_after_global_migration",
             '"drmid_runtime_control_v3.bin"',
-            '"drmid_control_v3.sock"',
+            '"drmid_control_v4.sock"',
             '"drmid_label_helper.jar"',
             "AT_SYMLINK_NOFOLLOW",
             "S_ISREG",
@@ -267,8 +302,8 @@ def verify_built_payloads() -> None:
             VERSION.encode("ascii"),
             DISPLAY_NAME.encode("utf-8"),
             AUTHOR.encode("utf-8"),
-            b"hal-outbound-binder",
-            b"drmid_control_v3.sock",
+            b"hal-binder+widevine-smcinvoke-global",
+            b"drmid_control_v4.sock",
         ):
             if expected not in data:
                 raise SystemExit(f"binary marker missing from {payload}: {expected!r}")

@@ -21,7 +21,7 @@
 <body>
   <header class="top"><div class="topin"><div class="brand">虚拟化 DRM ID</div><div id="statusPill" class="pill"><i class="dot"></i><span id="statusText">正在连接守护进程</span></div></div></header>
   <main class="wrap">
-    <section class="hero"><div class="eyebrow">HAL outbound · global</div><h1>一个 ID，全局生效。</h1><p>在 Widevine HAL 发送 Binder 回复前完成等长替换。配置不再关联应用包名；所有经已识别 Widevine HAL 读取 deviceUniqueId 的调用共享当前 ID。</p></section>
+    <section class="hero"><div class="eyebrow">Binder + TEE · global</div><h1>一个 ID，全局生效。</h1><p>同时覆盖 Widevine HAL Binder 回复与 OEMCrypto/TEE 直连读取。配置不关联应用包名或调用者身份，所有已识别 Widevine 通路共享当前 ID。</p></section>
     <section class="grid">
       <article class="card">
         <h2>运行模式</h2><p class="sub">使用一个开关控制全局 DRM ID 虚拟化。</p>
@@ -42,10 +42,12 @@
       </article>
 
       <article class="card wide">
-        <h2>运行状态</h2><p class="sub">HAL 身份与 Hook 配置相互独立，HAL 重启不会轮换虚拟 ID。</p>
+        <h2>运行状态</h2><p class="sub">Binder、TEE 对象身份与 Hook 配置相互独立，后端重启不会轮换虚拟 ID。</p>
         <div class="metrics">
-          <div class="metric"><label>后端</label><strong>HAL 出站 Binder</strong></div>
+          <div class="metric"><label>后端</label><strong id="backendState">—</strong></div>
           <div class="metric"><label>HAL 状态</label><strong id="halState">—</strong></div>
+          <div class="metric"><label>TEE 直连</label><strong id="teeState">—</strong></div>
+          <div class="metric"><label>TEE 对象</label><strong id="teeObjects">—</strong></div>
           <div class="metric"><label>生命周期监控</label><strong id="monitorState">—</strong></div>
           <div class="metric"><label>配置代次</label><strong id="generation">—</strong></div>
           <div class="metric"><label>运行模式</label><strong id="activeMode">—</strong></div>
@@ -58,13 +60,13 @@
       </article>
 
       <article class="card wide">
-        <h2>诊断</h2><p class="sub">以下计数用于确认 HAL 请求链路，不显示原始或虚拟 ID 内容。</p>
+        <h2>诊断</h2><p class="sub">以下计数用于确认 Binder 与 TEE 请求链路，不显示原始或虚拟 ID 内容。</p>
         <details class="details"><summary>查看完整状态</summary><pre id="diagnostics" class="diag">等待状态…</pre></details>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:18px"><button id="refreshBtn" class="btn secondary" type="button">刷新状态</button><button id="stopBtn" class="btn danger" type="button">停止模块</button></div>
         <div id="stopHint" class="notice" hidden>5 秒内再次点击确认停止。停止后需重新启动模块才能恢复。</div>
       </article>
     </section>
-    <p class="footer">1.2.0 · 斓梦语<br>页面退到后台或关闭时，当前 WebUI 会话和监听端口会自动结束。</p>
+    <p class="footer">1.3.0-rc1 · 斓梦语<br>页面退到后台或关闭时，当前 WebUI 会话和监听端口会自动结束。</p>
   </main>
   <footer class="actions"><div class="actionsin"><span id="actionState" class="actionstate">操作期间请保持页面在前台</span><button id="applyBtn" class="btn primary" type="button" disabled>应用设置</button></div></footer>
 
@@ -84,17 +86,20 @@
     function idAction(){const x=document.querySelector('input[name="idAction"]:checked');return x?x.value:'keep'}
     function monitorName(v){return v===1?'pidfd 事件驱动':v===2?'procfs 低频兼容':'等待 HAL'}
     function validCustom(){return idAction()!=='custom'||/^[0-9a-fA-F]{64}$/.test($('idHex').value.trim())}
-    function syncControls(){const on=$('modeToggle').checked;$('modeChoice').textContent='DRM ID虚拟化';$('modeChoiceHint').textContent=on?'当前状态：已开启 · 全局替换已严格关联的 32 字节 deviceUniqueId。':'当前状态：已关闭 · 只观察请求链路，不修改返回内容。';$('customField').hidden=idAction()!=='custom';$('applyBtn').disabled=!token||busy||!validCustom();$('idHint').textContent=validCustom()?'内容只写入模块私有配置。':'需要恰好 64 个十六进制字符。'}
+    function syncControls(){const on=$('modeToggle').checked;$('modeChoice').textContent='DRM ID虚拟化';$('modeChoiceHint').textContent=on?'当前状态：已开启 · 全局替换 Binder 与 TEE 已识别的 32 字节 deviceUniqueId。':'当前状态：已关闭 · 只观察请求链路，不修改返回内容。';$('customField').hidden=idAction()!=='custom';$('applyBtn').disabled=!token||busy||!validCustom();$('idHint').textContent=validCustom()?'内容只写入模块私有配置。':'需要恰好 64 个十六进制字符。'}
     function render(s){
-      const ready=s.result===0&&s.hal_count>0;
-      pill(ready?'ok':s.result===0?'warn':'bad',ready?'Hook 运行中':s.result===0?'等待 Widevine HAL':'守护进程异常');
+      const teeActive=s.tee_backend_state===1,ready=s.result===0&&(s.hal_count>0||teeActive);
+      pill(ready?'ok':s.result===0?'warn':'bad',ready?'Hook 运行中':s.result===0?'等待 Widevine 后端':'守护进程异常');
+      $('backendState').textContent=teeActive?'Binder + TEE 直连（全局）':'HAL 出站 Binder（全局）';
       $('halState').textContent=s.hal_count>0?`${s.hal_count} 个进程 · gen ${s.hal_identity_generation}`:'等待发现';
+      $('teeState').textContent=teeActive?`已启用 · firmware ${s.tee_firmware_generation||0}`:'未启用';
+      $('teeObjects').textContent=`controller ${s.tee_controller_count||0} · TA ${s.tee_widevine_object_count||0}`;
       $('monitorState').textContent=`${monitorName(s.hal_monitor_backend)} · ${s.hal_monitor_wakeups||0}`;
       $('generation').textContent=String(s.generation??'—');$('activeMode').textContent=s.mode===1?'开启虚拟化':'关闭虚拟化';
       $('virtualFp').textContent=s.fingerprint||'—';$('deviceFp').textContent=s.device_fingerprint||'尚未记录';
-      $('requests').textContent=String(s.server_request_hits??0);$('writes').textContent=String(s.write_ok??0);
+      $('requests').textContent=String((s.server_request_hits??0)+(s.tee_op9_candidates??0));$('writes').textContent=String((s.write_ok??0)+(s.tee_op9_write_ok??0));
       $('halNotice').className='notice '+(ready?'good':'warn');
-      $('halNotice').textContent=ready?`活动 HAL TGID：${(s.hal_tgids||[]).join(', ')}。稳定阶段无周期扫描。`:'HAL 身份集为空，Hook 保持 fail-closed；发现受信进程后会热发布，不重装 Hook。';
+      $('halNotice').textContent=ready?`全局调用者过滤：关闭。HAL ${s.hal_count||0} 个，TEE TA ${s.tee_widevine_object_count||0} 个；其他 Trusted App 不进入替换。`:'Widevine 身份链尚未建立，Hook 保持原始返回。';
       $('modeToggle').checked=s.mode===1;
       $('diagnostics').textContent=JSON.stringify(s,null,2);setAction('状态已同步');syncControls();
     }

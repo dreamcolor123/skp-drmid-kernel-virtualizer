@@ -199,6 +199,7 @@ void cleanup_module_state_files(const char* module_private_dir) {
         "drmid_control_v1.sock",
         "drmid_control_v2.sock",
         "drmid_control_v3.sock",
+        "drmid_control_v4.sock",
         "drmid_runtime_control_v1.bin",
         "drmid_runtime_control_v1.bin.tmp",
         "drmid_runtime_control_v2.bin",

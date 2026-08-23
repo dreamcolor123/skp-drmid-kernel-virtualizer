@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0-rc1
+
+- 增加 Widevine `si_object_do_invoke` / `free_si_object` TEE 后端，覆盖 OEMCrypto/SMCInvoke 直连路径。
+- Binder 与 TEE 共享同一 mode、seed/profile、generation 和虚拟 ID；TEE 侧按 Widevine loader/controller/TA 对象链做 fail-closed 识别。
+- Control IPC 升级为 `DRMIPC19` / v4 / 352 字节，Kernel Context 升级为 ABI 19。
+- 全局调用路径不使用包名、UID/EUID、PID 或 TGID 过滤；保留 HAL identity 集合用于 Binder 出站关联。
+- 新增固定容量 TEE 对象表、`free_si_object` 地址清理和无阻塞热路径发布守卫。
+- 增加 6.12 Dry-run/Write 双路径真机验收记录，以及单会话 OEMCrypto 直连验收工具。
+
 ## 1.2.0
 
 - 将虚拟化位置迁移到 Widevine HAL 的 Binder 出站回复路径，全局共享同一虚拟 ID。

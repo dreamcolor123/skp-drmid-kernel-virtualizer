@@ -6,9 +6,13 @@
 namespace drmid {
 
 constexpr uint64_t kCounterContextMagic = 0x44524d4944363132ULL; // DRMID612
-constexpr uint64_t kCounterContextAbi = 18;
+constexpr uint64_t kCounterContextAbi = 19;
 constexpr size_t kHalIdentityLimit = 4;
 constexpr uint32_t kWidevineDeviceUniqueIdBytes = 32;
+constexpr size_t kTeeFirmwareEdgeBytes = 32;
+constexpr size_t kTeeControllerObjectLimit = 16;
+constexpr size_t kTeeWidevineObjectLimit = 32;
+constexpr size_t kTeeFallbackStateLimit = 16;
 constexpr size_t kTransactionEventCapacity = 256;
 constexpr size_t kPendingSlotCapacity = 256;
 constexpr size_t kPendingBucketWays = 8;
@@ -114,6 +118,15 @@ struct alignas(8) HalIdentitySet {
     uint32_t tgids[kHalIdentityLimit];
 };
 
+struct alignas(8) TeeFirmwareIdentitySlot {
+    uint64_t generation;
+    uint64_t file_size;
+    uint32_t edge_bytes;
+    uint32_t reserved;
+    uint8_t prefix[kTeeFirmwareEdgeBytes];
+    uint8_t suffix[kTeeFirmwareEdgeBytes];
+};
+
 static_assert(sizeof(BinderTransactionEvent) == 160);
 static_assert(sizeof(BinderPendingFrame) == 48);
 static_assert(sizeof(BinderPendingSlot) == 216);
@@ -121,6 +134,8 @@ static_assert(sizeof(RuntimeConfigSlot) == 96);
 static_assert(offsetof(RuntimeConfigSlot, virtual_id) == 32);
 static_assert(sizeof(HalIdentitySet) == 32);
 static_assert(offsetof(HalIdentitySet, tgids) == 16);
+static_assert(sizeof(TeeFirmwareIdentitySlot) == 88);
+static_assert(offsetof(TeeFirmwareIdentitySlot, prefix) == 24);
 
 // Preallocated EL1 RW state. Both configuration and internal HAL identities
 // use immutable double slots with release-published active indices.
@@ -208,6 +223,44 @@ struct alignas(8) KernelCounterContext {
     uint64_t hal_identity_rejections;
     uint64_t hal_identity_restarts;
     HalIdentitySet hal_identity_slots[2];
+
+    // SMCInvoke is caller-global: no UID, EUID, package or TGID is consulted.
+    // Fixed object tables identify only the Widevine TA protocol chain and
+    // prevent same-shaped operations from other trusted applications (for
+    // example qms) from becoming replacement candidates.
+    uint32_t tee_backend_state;
+    uint32_t tee_backend_reserved;
+    uint64_t tee_invoke_target_kaddr;
+    uint64_t tee_free_target_kaddr;
+    uint64_t tee_active_calls;
+    uint64_t tee_invoke_calls;
+    uint64_t tee_free_calls;
+    uint64_t tee_loader_candidates;
+    uint64_t tee_loader_identity_hits;
+    uint64_t tee_loader_identity_faults;
+    uint64_t tee_controller_adds;
+    uint64_t tee_controller_hits;
+    uint64_t tee_ta_adds;
+    uint64_t tee_ta_hits;
+    uint64_t tee_op9_candidates;
+    uint64_t tee_op9_dry_run_hits;
+    uint64_t tee_op9_write_ok;
+    uint64_t tee_op9_write_faults;
+    uint64_t tee_argument_rejects;
+    uint64_t tee_result_rejects;
+    uint64_t tee_state_full;
+    uint64_t tee_address_clears;
+    uint64_t tee_fallback_transitions;
+    uint64_t tee_fallback_matches;
+    uint64_t tee_fallback_resets;
+    uint64_t tee_fallback_cas_drops;
+    TeeFirmwareIdentitySlot tee_firmware_identity;
+    uint64_t tee_controller_objects[kTeeControllerObjectLimit];
+    uint64_t tee_widevine_objects[kTeeWidevineObjectLimit];
+    // si_object allocations are at least 8-byte aligned, so the low three
+    // bits encode fallback states 1..4 while the remaining bits hold the
+    // object pointer. CAS updates keep this table lock-free and bounded.
+    uint64_t tee_fallback_states[kTeeFallbackStateLimit];
 };
 
 static_assert(offsetof(KernelCounterContext, active_calls) == 16);
@@ -215,6 +268,10 @@ static_assert(offsetof(KernelCounterContext, events) % 8 == 0);
 static_assert(offsetof(KernelCounterContext, pending) % 8 == 0);
 static_assert(offsetof(KernelCounterContext, config_slots) % 8 == 0);
 static_assert(offsetof(KernelCounterContext, hal_identity_slots) % 8 == 0);
+static_assert(offsetof(KernelCounterContext, tee_firmware_identity) % 8 == 0);
+static_assert(offsetof(KernelCounterContext, tee_controller_objects) % 8 == 0);
+static_assert(offsetof(KernelCounterContext, tee_widevine_objects) % 8 == 0);
+static_assert(offsetof(KernelCounterContext, tee_fallback_states) % 8 == 0);
 static_assert(sizeof(KernelCounterContext) % 8 == 0);
 
 } // namespace drmid

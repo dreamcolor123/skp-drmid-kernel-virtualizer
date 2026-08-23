@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Release guards for the 1.2.0 HAL-global branch."""
+"""Release guards for the 1.3.0-rc1 caller-global candidate."""
 
 from __future__ import annotations
 
@@ -13,12 +13,16 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SDK = ROOT.parent / "kernel_module_kit" / "lib" / "libkernel_module_kit_static.a"
-VERSION = "1.2.0"
+VERSION = "1.3.0-rc1"
 ZIP = ROOT / "dist" / f"module_drmid_kernel_virtualizer-{VERSION}-arm64-run-once.zip"
 SDK_SHA256 = "9144ddc36c7ebe2bd524bc38d279c82c14d0f162cc195fcbe98f19882eab71d2"
 
 
 class ReleaseHardeningTest(unittest.TestCase):
+    def require_file(self, path: Path, label: str) -> None:
+        if not path.is_file():
+            self.skipTest(f"{label} is generated locally and is not tracked")
+
     def test_module_package_and_webui_versions_match(self) -> None:
         module = (ROOT / "module_main.cpp").read_text(encoding="utf-8")
         package = (ROOT / "package.py").read_text(encoding="utf-8")
@@ -46,8 +50,7 @@ class ReleaseHardeningTest(unittest.TestCase):
         module = (ROOT / "module_main.cpp").read_text(encoding="utf-8")
         self.assertIn('SKROOT_MODULE_NAME("虚拟化DRM ID")', module)
         self.assertIn('SKROOT_MODULE_AUTHOR("斓梦语")', module)
-        if not SDK.is_file():
-            self.skipTest("SKP SDK static library is not part of the source repository")
+        self.require_file(SDK, "SKP SDK static library")
         self.assertEqual(hashlib.sha256(SDK.read_bytes()).hexdigest(), SDK_SHA256)
 
     def test_retired_multi_application_sources_are_absent(self) -> None:
@@ -67,7 +70,7 @@ class ReleaseHardeningTest(unittest.TestCase):
     def test_packager_guards_hal_backend_lifecycle_and_global_webui(self) -> None:
         source = (ROOT / "package.py").read_text(encoding="utf-8")
         for marker in (
-            "HAL Binder backend", "kCounterContextAbi = 18",
+            "HAL Binder backend", "kCounterContextAbi = 19",
             "kGetPropertyByteArrayTransactionCode = 11",
             "HAL identity lifecycle", "pidfd_open", "clear_monitored_identities",
             "retired application hot path", "retired application WebUI",
@@ -107,8 +110,8 @@ class ReleaseHardeningTest(unittest.TestCase):
             self.assertNotIn(marker, production)
 
     def test_archive_members_are_exact_and_private(self) -> None:
-        if not ZIP.is_file():
-            self.skipTest("release ZIP is not part of the source repository")
+        self.require_file(ZIP, "release ZIP")
+        self.assertTrue(ZIP.is_file())
         with zipfile.ZipFile(ZIP) as archive:
             self.assertEqual(
                 set(archive.namelist()),
@@ -122,27 +125,25 @@ class ReleaseHardeningTest(unittest.TestCase):
             self.assertFalse(any("label_helper" in name or name.startswith("data/local/tmp") for name in archive.namelist()))
 
     def test_archive_build_is_reproducible(self) -> None:
-        payloads = (
+        self.require_file(SDK, "SKP SDK static library")
+        for payload in (
             ROOT / "libs" / "arm64-v8a" / "libmodule_drmid_kernel_virtualizer.so",
             ROOT / "libs" / "arm64-v8a" / "drmid_probe_runner",
-        )
-        if not SDK.is_file() or not all(path.is_file() for path in payloads):
-            self.skipTest("SDK and built payloads are required for packaging checks")
+        ):
+            self.require_file(payload, "built ARM64 payload")
         first = subprocess.run(["python3", "package.py"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.splitlines()[-1]
         second = subprocess.run(["python3", "package.py"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.splitlines()[-1]
         self.assertEqual(first, second)
         self.assertEqual(first, hashlib.sha256(ZIP.read_bytes()).hexdigest())
 
     def test_binaries_contain_current_identity_and_backend(self) -> None:
-        payloads = (
+        for payload in (
             ROOT / "libs" / "arm64-v8a" / "libmodule_drmid_kernel_virtualizer.so",
             ROOT / "libs" / "arm64-v8a" / "drmid_probe_runner",
-        )
-        if not all(path.is_file() for path in payloads):
-            self.skipTest("built payloads are not part of the source repository")
-        for payload in payloads:
+        ):
+            self.require_file(payload, "built ARM64 payload")
             data = payload.read_bytes()
-            for marker in (VERSION.encode(), "虚拟化DRM ID".encode(), b"hal-outbound-binder", b"drmid_control_v3.sock"):
+            for marker in (VERSION.encode(), "虚拟化DRM ID".encode(), b"hal-binder+widevine-smcinvoke-global", b"drmid_control_v4.sock"):
                 self.assertIn(marker, data)
 
     def test_kernel_66_and_612_strict_profiles_remain_guarded(self) -> None:

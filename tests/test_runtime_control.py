@@ -15,6 +15,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools" / "write_runtime_control.py"
+if not TOOLS.is_file():
+    TOOLS = ROOT.parents[1] / "tools" / "write_runtime_control.py"
 SPEC = importlib.util.spec_from_file_location("runtime_control_writer", TOOLS)
 assert SPEC and SPEC.loader
 WRITER = importlib.util.module_from_spec(SPEC)

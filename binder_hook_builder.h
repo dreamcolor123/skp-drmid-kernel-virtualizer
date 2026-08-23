@@ -33,6 +33,10 @@ struct CounterHookSession {
     uint64_t context_kaddr = 0;
     uint64_t active_at_remove = 0;
     kernel_module::HookHandle hook = nullptr;
+    uint64_t tee_invoke_target_kaddr = 0;
+    uint64_t tee_free_target_kaddr = 0;
+    kernel_module::HookHandle tee_invoke_hook = nullptr;
+    kernel_module::HookHandle tee_free_hook = nullptr;
 };
 
 // Publishes a complete policy into the inactive kernel slot and flips the
