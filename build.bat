@@ -10,6 +10,11 @@ if not exist "%NDK_BUILD%" (
 )
 
 pushd "%~dp0"
+python prepare_sdk.py
+if errorlevel 1 (
+    popd
+    exit /b 1
+)
 call "%NDK_BUILD%" -j8
 set "RC=%ERRORLEVEL%"
 popd

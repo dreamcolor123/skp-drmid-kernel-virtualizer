@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0-rc2
+
+- 将构建依赖升级到 SKRoot Pro SDK 4.6.0。
+- 通过浅层 Git submodule 连接官方上游仓库，并固定到提交
+  `843b8ab32905e653d5959683cfca328883e9076c`，避免浮动分支破坏可复现构建。
+- 发布守卫固定校验 SDK 静态库 SHA-256；未初始化 submodule 时给出明确命令。
+- 缺少本地设备 AIDL 探针素材时跳过该可选探针，公开仓库克隆后仍可构建正式模块。
+- WebUI 离开前台后进入整页终止状态，并关闭会话与监听端口。
+
 ## 1.3.0-rc1
 
 - 增加 Widevine `si_object_do_invoke` / `free_si_object` TEE 后端，覆盖 OEMCrypto/SMCInvoke 直连路径。

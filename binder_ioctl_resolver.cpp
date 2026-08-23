@@ -47,7 +47,7 @@ KModErr load_offsets(BinderKernelOffsets& offsets) {
         } else if ((err == KModErr::ERR_MODULE_OFFSET_NOT_FOUND ||
                     err == KModErr::ERR_MODULE_CREATE_EMPTY_FILE) &&
                    kernel_66) {
-            // Captured on Linux 6.6.89 / SDK 4.5.4 and cross-validated by
+            // Captured on Linux 6.6.89 and cross-validated by
             // file->f_op == binder_fops. The live symbol scan below remains
             // authoritative and corrects any future layout drift.
             offsets.file_f_op = 0xc0;
@@ -63,7 +63,7 @@ KModErr load_offsets(BinderKernelOffsets& offsets) {
     printf("[drmid612] offset fops.unlocked_ioctl=%u result=%s\n",
            offsets.fops_unlocked_ioctl, to_string(err).c_str());
     if (is_failed(err)) {
-        // SDK 4.5.4 does not yet expose this member offset on the captured
+        // Older SDK profiles may not expose this member offset on the captured
         // Android 16 / Linux 6.12 build. 0x50 comes from both the captured
         // rust_binder_fops relocation and the live classic binder_fops match.
         // The resolver still reads the target through the live f_op and the
@@ -255,7 +255,7 @@ KModErr resolve_binder_ioctl_from_fd(int binder_fd, BinderIoctlResolution& out) 
     }
 
     // Prefer an exact slot match against binder_ioctl when kallsyms is
-    // available. This also corrects SDK 4.5.4's missing 6.12 fops offset.
+    // available. This also corrects a missing 6.12 fops offset in older SDKs.
     bool ioctl_slot_found = false;
     if (is_ok(ioctl_symbol_err) && is_kernel_pointer(binder_ioctl_symbol)) {
         for (uint32_t offset = 0; offset < 0x108; offset += 8) {

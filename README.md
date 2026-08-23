@@ -2,7 +2,7 @@
 
 ## 当前候选
 
-`1.3.0-rc1` 同时使用 Widevine HAL 出站 Binder 与 SMCInvoke TEE 直连纯内核
+`1.3.0-rc2` 同时使用 Widevine HAL 出站 Binder 与 SMCInvoke TEE 直连纯内核
 Hook，并完整移除应用包名、应用 UID/EUID、多应用列表和应用标签 helper。所有
 已识别 Widevine 通路共享当前同一个虚拟 ID，不按调用者划定作用域。
 
@@ -16,7 +16,8 @@ Hook，并完整移除应用包名、应用 UID/EUID、多应用列表和应用�
 - ARM64、64 位 Binder；
 - Linux 6.12 优先；
 - Linux 6.6 使用既有严格 resolver profile；
-- SKP SDK 固定为 4.5.4。
+- SKP SDK 4.6.0，通过官方上游 submodule 固定到提交
+  `843b8ab32905e653d5959683cfca328883e9076c`。
 
 ## 数据路径
 
@@ -87,6 +88,32 @@ ID 来源和 HAL 诊断。未选择 ID 来源时，APPLY 内部使用 keep，仅
 
 ## 构建与离线验收
 
+首次克隆时同时初始化上游 SDK：
+
+```bash
+git clone --recurse-submodules https://github.com/dreamcolor123/skp-drmid-kernel-virtualizer.git
+cd skp-drmid-kernel-virtualizer
+```
+
+已有克隆执行：
+
+```bash
+git submodule update --init --depth 1
+```
+
+SDK 来源为：
+
+```text
+third_party/SKRoot-linuxKernelRoot/
+  Pro(众测开放中)/src/testModule/kernel_module_kit
+```
+
+`build.bat` 会先运行 `prepare_sdk.py`，核对上游提交和静态库哈希，然后把 SDK
+暂存到未纳入版本控制的 `.sdk-cache/` ASCII 路径，以兼容 Windows NDK 对上游
+中文目录名的路径解析限制。
+
+随后清理、构建、测试并打包：
+
 ```bash
 /mnt/c/Windows/System32/cmd.exe /d /c clean.bat
 /mnt/c/Windows/System32/cmd.exe /d /c build.bat
@@ -94,7 +121,14 @@ python3 -m unittest discover -s tests -v
 python3 package.py
 ```
 
-当前离线结果：`162/162 PASS`，包含：
+发布守卫会校验 SDK 4.6.0 静态库 SHA-256：
+
+```text
+5b304a9d7e1c2d5d8aa2e7d2a95710d37b1f261e1a92ffe640737d747ed93f91
+```
+
+当前公开仓库 clean build：`PASS`；离线回归：`153 PASS + 1 个设备采集 Fixture
+按预期 SKIP`；连续两次打包哈希一致。覆盖项包括：
 
 - HAL method/interface/property 精确关联；
 - BC/BR stream边界与32字节回复改写；
@@ -102,7 +136,7 @@ python3 package.py
 - HAL身份交叉核验、pidfd退出、空集发布、退避和兼容监控；
 - Runtime v3布局、CRC、v2迁移保ID和双槽一致性；
 - WebUI全局状态、JavaScript语法和退后台关端口竞态；
-- 文件生命周期、SDK 4.5.4、ZIP成员白名单和可复现打包；
+- 文件生命周期、SDK 4.6.0 上游链接与哈希、ZIP成员白名单和可复现打包；
 - Linux 6.6/6.12 resolver profile回归。
 - Widevine MBN普通文件、symlink、短文件、缺失和路径优先级；
 - qms同形op9隔离、loader/controller/TA链、cached-loader连续签名；
@@ -112,13 +146,13 @@ python3 package.py
 候选包：
 
 ```text
-dist/module_drmid_kernel_virtualizer-1.3.0-rc1-arm64-run-once.zip
+dist/module_drmid_kernel_virtualizer-1.3.0-rc2-arm64-run-once.zip
 ```
 
-最新 clean build 的候选 SHA-256：
+当前 SDK 4.6.0 clean build 候选 SHA-256：
 
 ```text
-324bc8d203e12ae9cf4afc83d798fa395b239828d485cced6bb4241f14e6609c
+2690f4ff3e9965041b77e24d66cd29eec85e49294dfa9253b6ca0efc75c28fb3
 ```
 
 ZIP 固定只包含：

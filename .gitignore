@@ -14,6 +14,7 @@ __pycache__/
 
 # Local SDK/prebuilt material
 /kernel_module_kit/
+/.sdk-cache/
 /prebuilt/
 /generated/
 /.env

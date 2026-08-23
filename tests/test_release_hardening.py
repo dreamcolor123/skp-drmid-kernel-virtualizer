@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Release guards for the 1.3.0-rc1 caller-global candidate."""
+"""Release guards for the 1.3.0-rc2 caller-global candidate."""
 
 from __future__ import annotations
 
@@ -12,10 +12,12 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SDK = ROOT.parent / "kernel_module_kit" / "lib" / "libkernel_module_kit_static.a"
-VERSION = "1.3.0-rc1"
+SDK_ROOT = ROOT / "third_party" / "SKRoot-linuxKernelRoot"
+SDK = SDK_ROOT / "Pro(众测开放中)" / "src" / "testModule" / "kernel_module_kit" / "lib" / "libkernel_module_kit_static.a"
+VERSION = "1.3.0-rc2"
 ZIP = ROOT / "dist" / f"module_drmid_kernel_virtualizer-{VERSION}-arm64-run-once.zip"
-SDK_SHA256 = "9144ddc36c7ebe2bd524bc38d279c82c14d0f162cc195fcbe98f19882eab71d2"
+SDK_COMMIT = "843b8ab32905e653d5959683cfca328883e9076c"
+SDK_SHA256 = "5b304a9d7e1c2d5d8aa2e7d2a95710d37b1f261e1a92ffe640737d747ed93f91"
 
 
 class ReleaseHardeningTest(unittest.TestCase):
@@ -46,12 +48,33 @@ class ReleaseHardeningTest(unittest.TestCase):
         ):
             self.assertNotIn(retired, html)
 
-    def test_formal_identity_and_sdk_454_are_pinned(self) -> None:
+    def test_formal_identity_and_sdk_460_are_pinned(self) -> None:
         module = (ROOT / "module_main.cpp").read_text(encoding="utf-8")
         self.assertIn('SKROOT_MODULE_NAME("虚拟化DRM ID")', module)
         self.assertIn('SKROOT_MODULE_AUTHOR("斓梦语")', module)
         self.require_file(SDK, "SKP SDK static library")
         self.assertEqual(hashlib.sha256(SDK.read_bytes()).hexdigest(), SDK_SHA256)
+
+    def test_sdk_is_linked_to_the_pinned_upstream_repository(self) -> None:
+        modules = (ROOT / ".gitmodules").read_text(encoding="utf-8")
+        self.assertIn("https://github.com/abcz316/SKRoot-linuxKernelRoot.git", modules)
+        self.assertIn("third_party/SKRoot-linuxKernelRoot", modules)
+        self.assertIn("shallow = true", modules)
+        package = (ROOT / "package.py").read_text(encoding="utf-8")
+        prepare = (ROOT / "prepare_sdk.py").read_text(encoding="utf-8")
+        self.assertIn(SDK_COMMIT, prepare)
+        self.assertIn("verify_sdk_commit", package)
+        self.assertIn(SDK_COMMIT, package)
+        self.assertIn('SDK_VERSION = "4.6.0"', package)
+        self.assertIn(SDK_SHA256, prepare)
+        self.assertIn(".sdk-cache", prepare)
+        android_mk = (ROOT / "jni" / "Android.mk").read_text(encoding="utf-8")
+        self.assertIn("../.sdk-cache/kernel_module_kit", android_mk)
+        gitlink = subprocess.run(
+            ["git", "ls-files", "--stage", "third_party/SKRoot-linuxKernelRoot"],
+            cwd=ROOT, check=True, capture_output=True, text=True,
+        ).stdout
+        self.assertIn(f"160000 {SDK_COMMIT}", gitlink)
 
     def test_retired_multi_application_sources_are_absent(self) -> None:
         for name in (

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Build the reproducible SKRoot Pro 1.3.0-rc1 global module archive."""
+"""Build the reproducible SKRoot Pro 1.3.0-rc2 global module archive."""
 
 from __future__ import annotations
 
 import hashlib
 from pathlib import Path
 import re
+import subprocess
 import zipfile
 
 
@@ -14,12 +15,19 @@ SO = ROOT / "libs" / "arm64-v8a" / "libmodule_drmid_kernel_virtualizer.so"
 DAEMON = ROOT / "libs" / "arm64-v8a" / "drmid_probe_runner"
 WEBROOT = ROOT / "webroot"
 DIST = ROOT / "dist"
-VERSION = "1.3.0-rc1"
+VERSION = "1.3.0-rc2"
 DISPLAY_NAME = "虚拟化DRM ID"
 AUTHOR = "斓梦语"
 ZIP = DIST / f"module_drmid_kernel_virtualizer-{VERSION}-arm64-run-once.zip"
-SDK_STATIC = ROOT.parent / "kernel_module_kit" / "lib" / "libkernel_module_kit_static.a"
-EXPECTED_SDK_SHA256 = "9144ddc36c7ebe2bd524bc38d279c82c14d0f162cc195fcbe98f19882eab71d2"
+SDK_VERSION = "4.6.0"
+SDK_UPSTREAM_COMMIT = "843b8ab32905e653d5959683cfca328883e9076c"
+SDK_UPSTREAM = ROOT / "third_party" / "SKRoot-linuxKernelRoot"
+SDK_STATIC = (
+    ROOT / "third_party" / "SKRoot-linuxKernelRoot" /
+    "Pro(众测开放中)" / "src" / "testModule" /
+    "kernel_module_kit" / "lib" / "libkernel_module_kit_static.a"
+)
+EXPECTED_SDK_SHA256 = "5b304a9d7e1c2d5d8aa2e7d2a95710d37b1f261e1a92ffe640737d747ed93f91"
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 
 
@@ -43,6 +51,26 @@ def reject_markers(label: str, text: str, markers: tuple[str, ...]) -> None:
         raise SystemExit(f"{label} guard rejected: {present}")
 
 
+def verify_sdk_commit() -> None:
+    if not SDK_UPSTREAM.is_dir():
+        raise SystemExit(
+            "SKRoot SDK submodule missing: run git submodule update "
+            "--init --depth 1"
+        )
+    try:
+        actual = subprocess.run(
+            ["git", "-C", str(SDK_UPSTREAM), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise SystemExit(f"cannot inspect pinned SKRoot SDK submodule: {exc}")
+    if actual != SDK_UPSTREAM_COMMIT:
+        raise SystemExit(
+            f"SKRoot SDK commit mismatch: expected={SDK_UPSTREAM_COMMIT} "
+            f"actual={actual}"
+        )
+
+
 def verify_release_inputs() -> None:
     module_source = (ROOT / "module_main.cpp").read_text(encoding="utf-8")
     for macro, expected in (
@@ -55,12 +83,16 @@ def verify_release_inputs() -> None:
         if actual != expected:
             raise SystemExit(f"{macro} mismatch: expected={expected} actual={actual}")
 
+    verify_sdk_commit()
     if not SDK_STATIC.is_file():
-        raise SystemExit(f"SDK static library missing: {SDK_STATIC}")
+        raise SystemExit(
+            f"SDK submodule missing: {SDK_STATIC}; run "
+            "git submodule update --init --depth 1"
+        )
     actual_sdk = sha256_file(SDK_STATIC)
     if actual_sdk != EXPECTED_SDK_SHA256:
         raise SystemExit(
-            f"SDK 4.5.4 baseline mismatch: expected={EXPECTED_SDK_SHA256} "
+            f"SDK {SDK_VERSION} baseline mismatch: expected={EXPECTED_SDK_SHA256} "
             f"actual={actual_sdk}"
         )
 

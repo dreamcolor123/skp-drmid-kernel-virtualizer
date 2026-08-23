@@ -1,0 +1,5 @@
+[submodule "third_party/SKRoot-linuxKernelRoot"]
+	path = third_party/SKRoot-linuxKernelRoot
+	url = https://github.com/abcz316/SKRoot-linuxKernelRoot.git
+	branch = master
+	shallow = true

@@ -125,7 +125,7 @@ class WebUiStateSyncTest(unittest.TestCase):
         self.assertIn("env(safe-area-inset-bottom)", HTML)
 
     def test_release_identity_is_visible(self) -> None:
-        self.assertIn("1.3.0-rc1 · 斓梦语", HTML)
+        self.assertIn("1.3.0-rc2 · 斓梦语", HTML)
 
     def test_inline_javascript_has_valid_syntax(self) -> None:
         node = shutil.which("node")

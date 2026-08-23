@@ -1014,7 +1014,7 @@ void module_on_uninstall(const char*, const char* module_private_dir) {
 }
 
 SKROOT_MODULE_NAME("虚拟化DRM ID")
-SKROOT_MODULE_VERSION("1.3.0-rc1")
+SKROOT_MODULE_VERSION("1.3.0-rc2")
 SKROOT_MODULE_DESC("面向 Android 14+ / Linux 6.6与6.12 的 Widevine Binder 与 TEE 直连全局 DRM ID 内核虚拟化")
 SKROOT_MODULE_AUTHOR("斓梦语")
 SKROOT_MODULE_ID32("drmidKern612Probe20260728Alpha01")
