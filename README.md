@@ -50,6 +50,21 @@ tests/                       离线 Fixture
 tools/                       离线记录辅助工具
 ```
 
+## Binder 解析框架定位
+
+`1.1.3-rc2` 不只是一个 DRM ID 功能快照。它还保留了按应用选择、EUID 路由、
+Binder 命令流解析、请求/回复关联、双槽配置热切换和 WebUI 控制面，可作为开发其他
+Binder 返回值虚拟化模块的工程基线。
+
+这里的“框架”是指已经经过本项目验证的基础设施，而不是一个不区分 Android 版本、
+Binder 服务和 Parcel 格式的通用解析库。当前业务 handler 只识别 Widevine
+`deviceUniqueId`；扩展 PackageManager、Settings 或其他 Binder 服务时，仍需为目标
+接口实现严格的 interface、transaction code、Parcel 布局和返回值校验。
+
+可复用能力、版本边界、推荐拆分方式和扩展检查表详见：
+
+- [1.1.3-rc2 Binder 解析框架与扩展指南](docs/BINDER_FRAMEWORK.md)
+
 ## 构建
 
 本仓库只保存模块源码，不提交 SKP SDK 静态库、NDK 输出、设备预编译库、管理器日志
