@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Release guards for the 1.4.0-rc1 Binder-global candidate."""
+"""Release guards for the 1.4.0 Binder-global release."""
 
 from __future__ import annotations
 
@@ -17,10 +17,10 @@ SDK = (
     SDK_UPSTREAM / "Pro(众测开放中)" / "src" / "testModule" /
     "kernel_module_kit" / "lib" / "libkernel_module_kit_static.a"
 )
-VERSION = "1.4.0-rc1"
+VERSION = "1.4.0"
 ZIP = ROOT / "dist" / f"module_drmid_kernel_virtualizer-{VERSION}-arm64-run-once.zip"
-SDK_SHA256 = "9144ddc36c7ebe2bd524bc38d279c82c14d0f162cc195fcbe98f19882eab71d2"
-SDK_COMMIT = "90a28f81b85042b2483a62630455f1d70e334d6f"
+SDK_SHA256 = "5b304a9d7e1c2d5d8aa2e7d2a95710d37b1f261e1a92ffe640737d747ed93f91"
+SDK_COMMIT = "68020a4e265dcfaa875e97f54f14f07422b9f1d2"
 
 
 class ReleaseHardeningTest(unittest.TestCase):
@@ -51,7 +51,7 @@ class ReleaseHardeningTest(unittest.TestCase):
         ):
             self.assertNotIn(retired, html)
 
-    def test_formal_identity_and_sdk_454_are_pinned(self) -> None:
+    def test_formal_identity_and_sdk_461_are_pinned(self) -> None:
         module = (ROOT / "module_main.cpp").read_text(encoding="utf-8")
         self.assertIn('SKROOT_MODULE_NAME("虚拟化DRM ID")', module)
         self.assertIn('SKROOT_MODULE_AUTHOR("斓梦语")', module)
@@ -63,7 +63,7 @@ class ReleaseHardeningTest(unittest.TestCase):
         self.assertIn("shallow = true", modules)
         package = (ROOT / "package.py").read_text(encoding="utf-8")
         prepare = (ROOT / "prepare_sdk.py").read_text(encoding="utf-8")
-        self.assertIn('SDK_VERSION = "4.5.4"', package)
+        self.assertIn('SDK_VERSION = "4.6.1"', package)
         self.assertIn("verify_sdk_commit", package)
         self.assertIn(SDK_COMMIT, package)
         self.assertIn(SDK_COMMIT, prepare)

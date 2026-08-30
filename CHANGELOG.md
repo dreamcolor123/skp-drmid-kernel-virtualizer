@@ -1,6 +1,18 @@
 # Changelog
 
+## 1.4.0
+
+- 将 1.4.0-rc1 冻结为正式版；Binder-only 全局后端和 Linux 6.1+ 通用能力发现保持不变。
+- 删除 TEE/SMCInvoke 后端，仅保留 Widevine HAL 出站 Binder 全局后端。
+- 固定使用 SKRoot Pro SDK 4.6.1 上游提交 `68020a4e265dcfaa875e97f54f14f07422b9f1d2`，静态库 SHA-256 为
+  `5b304a9d7e1c2d5d8aa2e7d2a95710d37b1f261e1a92ffe640737d747ed93f91`。
+- 保持 Kernel Context ABI 20、Control IPC `DRMIPC20`/v5、Runtime control v3 和现有虚拟 ID 行为。
+- 已完成 Linux 6.12 / Android 16 Resolver-only、Dry-run 与 Write 验收；群友反馈 Linux 6 系列测试正常，无已知 bug。
+- 离线回归 `163/163 PASS`，正式 ZIP 使用固定成员、权限和时间戳，可复现构建。
+- 正式 ZIP SHA-256：`129d15927884c2a55599e1f24313875cd4de5f369744346c9cf85bde6f57242e`。
+
 ## 1.4.0-rc1
+
 
 - 删除 TEE/SMCInvoke 后端，仅保留 Widevine HAL 出站 Binder 全局后端。
 - Resolver 改为面向 Android 14+、ARM64、64 位 Binder、Linux 6.1+ 的运行时能力发现；

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the reproducible SKRoot Pro 1.4.0-rc1 Binder-global archive."""
+"""Build the reproducible SKRoot Pro 1.4.0 Binder-global archive."""
 
 from __future__ import annotations
 
@@ -15,18 +15,18 @@ SO = ROOT / "libs" / "arm64-v8a" / "libmodule_drmid_kernel_virtualizer.so"
 DAEMON = ROOT / "libs" / "arm64-v8a" / "drmid_probe_runner"
 WEBROOT = ROOT / "webroot"
 DIST = ROOT / "dist"
-VERSION = "1.4.0-rc1"
+VERSION = "1.4.0"
 DISPLAY_NAME = "虚拟化DRM ID"
 AUTHOR = "斓梦语"
 ZIP = DIST / f"module_drmid_kernel_virtualizer-{VERSION}-arm64-run-once.zip"
-SDK_VERSION = "4.5.4"
-SDK_UPSTREAM_COMMIT = "90a28f81b85042b2483a62630455f1d70e334d6f"
+SDK_VERSION = "4.6.1"
+SDK_UPSTREAM_COMMIT = "68020a4e265dcfaa875e97f54f14f07422b9f1d2"
 SDK_UPSTREAM = ROOT / "third_party" / "SKRoot-linuxKernelRoot"
 SDK_STATIC = (
     SDK_UPSTREAM / "Pro(众测开放中)" / "src" / "testModule" /
     "kernel_module_kit" / "lib" / "libkernel_module_kit_static.a"
 )
-EXPECTED_SDK_SHA256 = "9144ddc36c7ebe2bd524bc38d279c82c14d0f162cc195fcbe98f19882eab71d2"
+EXPECTED_SDK_SHA256 = "5b304a9d7e1c2d5d8aa2e7d2a95710d37b1f261e1a92ffe640737d747ed93f91"
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 
 

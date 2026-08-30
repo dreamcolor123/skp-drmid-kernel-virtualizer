@@ -1,8 +1,8 @@
 # SKP DRM ID Kernel Virtualizer
 
-## 当前候选
+## 当前正式版
 
-`1.4.0-rc1` 在 Binder-only 全局后端上引入运行时 Binder 能力发现，面向
+`1.4.0` 在 Binder-only 全局后端上引入运行时 Binder 能力发现，面向
 Linux 6.1+ 统一解析并移除按小版本固定入口序言放行的版本矩阵。普通应用经 Java
 `MediaDrm` 或 NDK `AMediaDrm` 读取 `deviceUniqueId` 时，共享当前同一个虚拟 ID；
 配置不关联应用包名、UID/EUID、PID/TGID 或调用者身份。
@@ -16,7 +16,7 @@ WebUI 使用一个“DRM ID虚拟化”开关，以及“固定值、随机值�
 - Android 14+；
 - ARM64、64 位 Binder；
 - Linux 6.1+，以运行时能力校验作为最终门禁；
-- SKP SDK 固定为 4.5.4。
+- SKP SDK 固定为 4.6.1。
 
 ## 唯一数据路径
 
@@ -67,7 +67,7 @@ WebUI 提供固定值、随机值、自定义三种 ID 来源和 HAL 诊断。�
 关闭或心跳失效后，会话和监听端口自动结束；当前页面进入不可恢复的整页“后台已
 退出，请重新从管理器打开”状态，不在恢复前台时自动重连。
 
-## 1.4.0-rc1 通用能力发现
+## 1.4.0 通用能力发现
 
 - SDK 动态解析 `task/files/fdtable` 偏移，并通过 live Binder FD 取得真实对象；
 - 使用 `binder_fops` / `binder_ioctl` 与 Rust Binder 对应符号做有界扫描和交叉校验；
@@ -92,10 +92,10 @@ cd skp-drmid-kernel-virtualizer
 git submodule update --init --depth 1
 ```
 
-SDK 固定到 SKRoot Pro 4.5.4 上游提交
-`90a28f81b85042b2483a62630455f1d70e334d6f`。`build.bat` 会先运行
+SDK 固定到 SKRoot Pro 4.6.1 上游提交
+`68020a4e265dcfaa875e97f54f14f07422b9f1d2`。`build.bat` 会先运行
 `prepare_sdk.py`，核验提交与静态库 SHA-256
-`9144ddc36c7ebe2bd524bc38d279c82c14d0f162cc195fcbe98f19882eab71d2`，再复制到未
+`5b304a9d7e1c2d5d8aa2e7d2a95710d37b1f261e1a92ffe640737d747ed93f91`，再复制到未
 纳入版本控制的 `.sdk-cache/` ASCII 路径供 Windows NDK 使用。
 
 ```bash
@@ -114,7 +114,7 @@ python3 package.py
 - Runtime v3 布局、CRC、v2 迁移保 ID 和双槽一致性；
 - WebUI 全局状态、JavaScript 语法和退后台关端口竞态；
 - TEE 源文件、符号、ABI 字段、WebUI 字段和二进制字符串全部缺失；
-- 文件生命周期、SDK 4.5.4、ZIP 成员白名单和可复现打包；
+- 文件生命周期、SDK 4.6.1、ZIP 成员白名单和可复现打包；
 - Linux 6.6/6.12 真实入口与合成 6.1 classic/Rust 入口语义回归；
 - Linux 6.1+ 版本门槛、符号/live 交叉验证和未知入口降级。
 
@@ -123,13 +123,13 @@ python3 package.py
 候选包：
 
 ```text
-dist/module_drmid_kernel_virtualizer-1.4.0-rc1-arm64-run-once.zip
+dist/module_drmid_kernel_virtualizer-1.4.0-arm64-run-once.zip
 ```
 
 SHA-256：
 
 ```text
-b715e26b56ac012afe306c798443fe054beb2b877f63a609cc1ec72a6eb5194e
+129d15927884c2a55599e1f24313875cd4de5f369744346c9cf85bde6f57242e
 ```
 
 ZIP 固定只包含：
