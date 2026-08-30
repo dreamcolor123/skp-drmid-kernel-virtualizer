@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Release guards for the 1.3.0-rc2 caller-global candidate."""
+"""Release guards for the 1.4.0-rc1 Binder-global candidate."""
 
 from __future__ import annotations
 
@@ -12,12 +12,15 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SDK_ROOT = ROOT / "third_party" / "SKRoot-linuxKernelRoot"
-SDK = SDK_ROOT / "Pro(众测开放中)" / "src" / "testModule" / "kernel_module_kit" / "lib" / "libkernel_module_kit_static.a"
-VERSION = "1.3.0-rc2"
+SDK_UPSTREAM = ROOT / "third_party" / "SKRoot-linuxKernelRoot"
+SDK = (
+    SDK_UPSTREAM / "Pro(众测开放中)" / "src" / "testModule" /
+    "kernel_module_kit" / "lib" / "libkernel_module_kit_static.a"
+)
+VERSION = "1.4.0-rc1"
 ZIP = ROOT / "dist" / f"module_drmid_kernel_virtualizer-{VERSION}-arm64-run-once.zip"
-SDK_COMMIT = "843b8ab32905e653d5959683cfca328883e9076c"
-SDK_SHA256 = "5b304a9d7e1c2d5d8aa2e7d2a95710d37b1f261e1a92ffe640737d747ed93f91"
+SDK_SHA256 = "9144ddc36c7ebe2bd524bc38d279c82c14d0f162cc195fcbe98f19882eab71d2"
+SDK_COMMIT = "90a28f81b85042b2483a62630455f1d70e334d6f"
 
 
 class ReleaseHardeningTest(unittest.TestCase):
@@ -48,52 +51,65 @@ class ReleaseHardeningTest(unittest.TestCase):
         ):
             self.assertNotIn(retired, html)
 
-    def test_formal_identity_and_sdk_460_are_pinned(self) -> None:
+    def test_formal_identity_and_sdk_454_are_pinned(self) -> None:
         module = (ROOT / "module_main.cpp").read_text(encoding="utf-8")
         self.assertIn('SKROOT_MODULE_NAME("虚拟化DRM ID")', module)
         self.assertIn('SKROOT_MODULE_AUTHOR("斓梦语")', module)
         self.require_file(SDK, "SKP SDK static library")
         self.assertEqual(hashlib.sha256(SDK.read_bytes()).hexdigest(), SDK_SHA256)
-
-    def test_sdk_is_linked_to_the_pinned_upstream_repository(self) -> None:
         modules = (ROOT / ".gitmodules").read_text(encoding="utf-8")
         self.assertIn("https://github.com/abcz316/SKRoot-linuxKernelRoot.git", modules)
         self.assertIn("third_party/SKRoot-linuxKernelRoot", modules)
         self.assertIn("shallow = true", modules)
         package = (ROOT / "package.py").read_text(encoding="utf-8")
         prepare = (ROOT / "prepare_sdk.py").read_text(encoding="utf-8")
-        self.assertIn(SDK_COMMIT, prepare)
+        self.assertIn('SDK_VERSION = "4.5.4"', package)
         self.assertIn("verify_sdk_commit", package)
         self.assertIn(SDK_COMMIT, package)
-        self.assertIn('SDK_VERSION = "4.6.0"', package)
+        self.assertIn(SDK_COMMIT, prepare)
         self.assertIn(SDK_SHA256, prepare)
         self.assertIn(".sdk-cache", prepare)
         android_mk = (ROOT / "jni" / "Android.mk").read_text(encoding="utf-8")
         self.assertIn("../.sdk-cache/kernel_module_kit", android_mk)
         gitlink = subprocess.run(
             ["git", "ls-files", "--stage", "third_party/SKRoot-linuxKernelRoot"],
-            cwd=ROOT, check=True, capture_output=True, text=True,
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout
         self.assertIn(f"160000 {SDK_COMMIT}", gitlink)
+        actual_commit = subprocess.run(
+            ["git", "-C", str(SDK_UPSTREAM), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertEqual(actual_commit, SDK_COMMIT)
 
     def test_retired_multi_application_sources_are_absent(self) -> None:
         for name in (
             "app_catalog.cpp", "app_catalog.h", "target_config.cpp",
             "target_config.h", "build_label_helper.py",
+            "tee_hook_builder.cpp", "tee_hook_builder.h",
+            "tee_firmware_identity.cpp", "tee_firmware_identity.h",
         ):
             self.assertFalse((ROOT / name).exists(), name)
         self.assertFalse((ROOT / "label_helper" / "drmid_label_helper.jar").exists())
 
     def test_android_makefile_does_not_build_retired_components(self) -> None:
         makefile = (ROOT / "jni" / "Android.mk").read_text(encoding="utf-8")
-        for retired in ("app_catalog.cpp", "target_config.cpp", "drmid_multi_target_probe"):
+        for retired in (
+            "app_catalog.cpp", "target_config.cpp", "drmid_multi_target_probe",
+            "tee_hook_builder.cpp", "tee_firmware_identity.cpp",
+        ):
             self.assertNotIn(retired, makefile)
         self.assertIn("../hal_identity.cpp", makefile)
 
     def test_packager_guards_hal_backend_lifecycle_and_global_webui(self) -> None:
         source = (ROOT / "package.py").read_text(encoding="utf-8")
         for marker in (
-            "HAL Binder backend", "kCounterContextAbi = 19",
+            "HAL Binder backend", "kCounterContextAbi = 20",
             "kGetPropertyByteArrayTransactionCode = 11",
             "HAL identity lifecycle", "pidfd_open", "clear_monitored_identities",
             "retired application hot path", "retired application WebUI",
@@ -132,6 +148,19 @@ class ReleaseHardeningTest(unittest.TestCase):
         ):
             self.assertNotIn(marker, production)
 
+    def test_retired_tee_backend_is_absent_from_production(self) -> None:
+        production = "\n".join(
+            path.read_text(encoding="utf-8")
+            for pattern in ("*.cpp", "*.h")
+            for path in ROOT.glob(pattern)
+        )
+        for marker in (
+            "si_object_do_invoke", "free_si_object", "TeeFirmwareIdentity",
+            "tee_backend_state", "tee_op9_candidates", "widevine.mbn",
+            "hal-binder+widevine-smcinvoke-global",
+        ):
+            self.assertNotIn(marker, production)
+
     def test_archive_members_are_exact_and_private(self) -> None:
         self.require_file(ZIP, "release ZIP")
         self.assertTrue(ZIP.is_file())
@@ -166,14 +195,29 @@ class ReleaseHardeningTest(unittest.TestCase):
         ):
             self.require_file(payload, "built ARM64 payload")
             data = payload.read_bytes()
-            for marker in (VERSION.encode(), "虚拟化DRM ID".encode(), b"hal-binder+widevine-smcinvoke-global", b"drmid_control_v4.sock"):
+            for marker in (VERSION.encode(), "虚拟化DRM ID".encode(), b"hal-outbound-binder-global", b"drmid_control_v5.sock"):
                 self.assertIn(marker, data)
+            for marker in (b"si_object_do_invoke", b"free_si_object", b"widevine.mbn"):
+                self.assertNotIn(marker, data)
 
-    def test_kernel_66_and_612_strict_profiles_remain_guarded(self) -> None:
+    def test_linux_61_plus_capability_resolver_remains_guarded(self) -> None:
         resolver = (ROOT / "binder_ioctl_resolver.cpp").read_text(encoding="utf-8")
+        header = (ROOT / "binder_ioctl_resolver.h").read_text(encoding="utf-8")
         module = (ROOT / "module_main.cpp").read_text(encoding="utf-8")
-        for marker in ("kClassicBinder66", "classic_binder-6.6", 'kernel_version.rfind("6.6.", 0)', 'kernel_version.rfind("6.12.", 0)', "is_supported_ioctl_profile"):
-            self.assertIn(marker, resolver + module)
+        for marker in (
+            "BinderBackend::kClassic", "BinderBackend::kRust",
+            "is_supported_linux_6_1_or_newer", "classify_semantic_entry",
+            "kRequiredBinderCapabilities", "has_required_binder_capabilities",
+            "drmid_binder_capability_v1.bin",
+        ):
+            self.assertIn(marker, resolver + header + module)
+        for retired in (
+            "kClassicBinder66", "kClassicBinder612", "kRustBinder612",
+            "is_supported_ioctl_profile",
+            'kernel_version.rfind("6.6.", 0)',
+            'kernel_version.rfind("6.12.", 0)',
+        ):
+            self.assertNotIn(retired, resolver + header + module)
 
 
 if __name__ == "__main__":

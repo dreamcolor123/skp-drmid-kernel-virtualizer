@@ -13,6 +13,7 @@
 #include <thread>
 #include <unistd.h>
 
+#include "binder_ioctl_resolver.h"
 #include "control_ipc.h"
 #include "device_id_fingerprint.h"
 #include "file_lifecycle.h"
@@ -48,6 +49,56 @@ std::string status_json(const drmid::ControlIpcResponse& response,
         json += ",\"device_fingerprint\":\"" + std::string(text) + "\"";
     } else {
         json += ",\"device_fingerprint\":\"\"";
+    }
+    drmid::BinderCapabilityStatus binder_status;
+    const std::string binder_path =
+        drmid::default_binder_capability_path(module_private_dir);
+    const KModErr binder_err = drmid::read_binder_capability_status(
+        binder_path.c_str(), binder_status);
+    if (is_ok(binder_err)) {
+        const bool symbol_scan =
+            binder_status.file_f_op_source ==
+                drmid::BinderOffsetSource::kSymbolScan ||
+            binder_status.fops_unlocked_ioctl_source ==
+                drmid::BinderOffsetSource::kSymbolScan;
+        char capabilities[17]{};
+        char entry_fingerprint[17]{};
+        std::snprintf(capabilities,
+                      sizeof(capabilities),
+                      "%016" PRIx64,
+                      binder_status.capabilities);
+        std::snprintf(entry_fingerprint,
+                      sizeof(entry_fingerprint),
+                      "%016" PRIx64,
+                      binder_status.entry_fingerprint);
+        json += ",\"kernel_release\":\"" + binder_status.kernel_release +
+                "\",\"binder_driver_backend\":\"" +
+                drmid::binder_backend_name(binder_status.backend) +
+                "\",\"binder_resolution_source\":\"" +
+                (symbol_scan ? "fd+sdk+symbol-scan"
+                             : "fd+sdk+symbol-check") +
+                "\",\"binder_file_offset_source\":\"" +
+                drmid::binder_offset_source_name(
+                    binder_status.file_f_op_source) +
+                "\",\"binder_ioctl_offset_source\":\"" +
+                drmid::binder_offset_source_name(
+                    binder_status.fops_unlocked_ioctl_source) +
+                "\",\"binder_capabilities\":\"" + capabilities +
+                "\",\"binder_entry_fingerprint\":\"" +
+                entry_fingerprint +
+                "\",\"binder_entry_semantics\":" +
+                std::to_string(binder_status.entry_semantics) +
+                ",\"binder_symbol_validations\":" +
+                std::to_string(binder_status.symbol_validations);
+    } else {
+        json += ",\"kernel_release\":\"\",\"binder_driver_backend\":\"unknown\""
+                ",\"binder_resolution_source\":\"unavailable\""
+                ",\"binder_file_offset_source\":\"unknown\""
+                ",\"binder_ioctl_offset_source\":\"unknown\""
+                ",\"binder_capabilities\":\"0000000000000000\""
+                ",\"binder_entry_fingerprint\":\"\""
+                ",\"binder_entry_semantics\":0"
+                ",\"binder_symbol_validations\":0";
     }
     json += "}";
     return json;

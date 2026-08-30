@@ -38,7 +38,7 @@ class DeviceIdFingerprintTest(unittest.TestCase):
         self.assertIn("drmid_original_fingerprint_v1.bin", LIFECYCLE)
         self.assertIn("drmid_original_fingerprint_v1.bin.tmp", LIFECYCLE)
 
-    def test_webui_status_exposes_fingerprint_without_changing_ipc_abi(self):
+    def test_webui_status_exposes_fingerprint_through_current_ipc_abi(self):
         self.assertIn("read_original_id_fingerprint", HEADER + WEB_UI)
         self.assertIn('\\"device_fingerprint\\"', WEB_UI)
         self.assertIn("module_private_dir", WEB_UI)

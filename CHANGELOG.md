@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.4.0-rc1
+
+- 删除 TEE/SMCInvoke 后端，仅保留 Widevine HAL 出站 Binder 全局后端。
+- Resolver 改为面向 Android 14+、ARM64、64 位 Binder、Linux 6.1+ 的运行时能力发现；
+  classic 与 Rust 只作为能力类别，不再按 6.6/6.12 小版本选择硬编码画像。
+- 增加 live Binder FD、`file->f_op`、Binder 符号、core text 指针和 256 字节入口指纹
+  的交叉校验，以及 BTI/PAC/栈帧/可重定位前缀语义分类。
+- 增加 Hook-site/veneer/trampoline 共存门禁：拒绝入口首条直接 `B`、SDK allocated
+  trampoline 和 core text 外分支目标，避免同一开机叠加 Hook。
+- Kernel Context ABI 保持 20，Control IPC 保持 `DRMIPC20` / v5，Runtime control
+  保持 `DRMCTL18` / v3；升级不轮换现有 seed、ID 或配置 generation。
+- 固定使用 SKRoot Pro SDK 4.5.4 上游提交
+  `90a28f81b85042b2483a62630455f1d70e334d6f` 及静态库哈希。
+- 6.6 真实采集 Fixture、6.12 原始入口和合成 6.1 classic/Rust 入口统一走同一解析路径；
+  全量离线回归 `163/163 PASS`。
+- Linux 6.12 / Android 16 已完成 Resolver-only、Dry-run 100 次与 Write 200 次真机
+  验收，所有 write/copy/boundary/pending fault 为 0，重启后原始入口恢复。
+
 ## 1.3.0-rc2
 
 - 将构建依赖升级到 SKRoot Pro SDK 4.6.0。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixtures for global Control IPC v3 and event-driven HAL lifecycle."""
+"""Fixtures for Binder-global Control IPC v5 and HAL lifecycle."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ SOURCE = (ROOT / "control_ipc.cpp").read_text(encoding="utf-8")
 WEB = (ROOT / "web_ui.cpp").read_text(encoding="utf-8")
 HTML = (ROOT / "webroot" / "index.html").read_text(encoding="utf-8")
 MODULE = (ROOT / "module_main.cpp").read_text(encoding="utf-8")
-MAGIC = 0x39314350494D5244
+MAGIC = 0x30324350494D5244
 
 
 class ResponseLayout(ctypes.Structure):
@@ -36,32 +36,12 @@ class ResponseLayout(ctypes.Structure):
         ("hal_count", ctypes.c_uint32), ("hal_tgids", ctypes.c_uint32 * 4),
         ("monitor_backend", ctypes.c_uint32),
         ("monitor_wakeups", ctypes.c_uint32),
-        ("tee_backend_state", ctypes.c_uint32),
-        ("tee_controller_count", ctypes.c_uint32),
-        ("tee_object_count", ctypes.c_uint32),
-        ("tee_fallback_count", ctypes.c_uint32),
-        ("tee_firmware_size", ctypes.c_uint64),
-        ("tee_firmware_generation", ctypes.c_uint64),
-        ("tee_invoke_calls", ctypes.c_uint64),
-        ("tee_free_calls", ctypes.c_uint64),
-        ("tee_loader_candidates", ctypes.c_uint64),
-        ("tee_loader_identity_hits", ctypes.c_uint64),
-        ("tee_loader_identity_faults", ctypes.c_uint64),
-        ("tee_controller_adds", ctypes.c_uint64),
-        ("tee_ta_adds", ctypes.c_uint64),
-        ("tee_op9_candidates", ctypes.c_uint64),
-        ("tee_op9_dry", ctypes.c_uint64),
-        ("tee_op9_write", ctypes.c_uint64),
-        ("tee_op9_fault", ctypes.c_uint64),
-        ("tee_state_full", ctypes.c_uint64),
-        ("tee_address_clears", ctypes.c_uint64),
-        ("tee_fallback_matches", ctypes.c_uint64),
-        ("crc32", ctypes.c_uint32), ("tail_reserved", ctypes.c_uint32),
+        ("crc32", ctypes.c_uint32),
     ]
 
 
 def request(operation: int, request_id: int = 7) -> bytes:
-    prefix = struct.pack("<QIIQ", MAGIC, 4, operation, request_id)
+    prefix = struct.pack("<QIIQ", MAGIC, 5, operation, request_id)
     return prefix + struct.pack("<II", binascii.crc32(prefix) & 0xFFFFFFFF, 0)
 
 
@@ -71,29 +51,29 @@ class ControlIpcTest(unittest.TestCase):
             data = request(operation)
             self.assertEqual(len(data), 32)
             self.assertEqual(struct.unpack_from("<I", data, 24)[0], binascii.crc32(data[:24]) & 0xFFFFFFFF)
-        self.assertIn("kControlIpcVersion = 4", HEADER)
-        self.assertIn("DRMIPC19", HEADER)
+        self.assertIn("kControlIpcVersion = 5", HEADER)
+        self.assertIn("DRMIPC20", HEADER)
 
     def test_request_corruption_fails_closed(self) -> None:
         data = bytearray(request(1))
         data[12] ^= 1
         self.assertNotEqual(struct.unpack_from("<I", data, 24)[0], binascii.crc32(data[:24]) & 0xFFFFFFFF)
 
-    def test_response_is_fixed_352_bytes_with_tee_telemetry(self) -> None:
-        self.assertEqual(ctypes.sizeof(ResponseLayout), 352)
+    def test_response_is_fixed_200_bytes_without_retired_tee_telemetry(self) -> None:
+        self.assertEqual(ctypes.sizeof(ResponseLayout), 200)
         self.assertEqual(ResponseLayout.hal_tgids.offset, 172)
         self.assertEqual(ResponseLayout.monitor_backend.offset, 188)
-        self.assertEqual(ResponseLayout.tee_backend_state.offset, 196)
-        self.assertEqual(ResponseLayout.tee_firmware_size.offset, 216)
-        self.assertEqual(ResponseLayout.crc32.offset, 344)
-        self.assertIn("static_assert(sizeof(ControlIpcResponse) == 352)", HEADER)
+        self.assertEqual(ResponseLayout.crc32.offset, 196)
+        self.assertIn("static_assert(sizeof(ControlIpcResponse) == 200)", HEADER)
+        for retired in ("tee_backend_state", "tee_firmware", "tee_op9"):
+            self.assertNotIn(retired, HEADER + SOURCE)
 
     def test_protocol_contains_no_package_uid_or_rule_fields(self) -> None:
         for retired in ("target_count", "target_euids", "rule_mode", "package_status", "shared_uid"):
             self.assertNotIn(retired, HEADER + SOURCE + WEB)
 
-    def test_daemon_uses_v3_record_and_socket(self) -> None:
-        self.assertIn('path += "drmid_control_v4.sock"', SOURCE)
+    def test_daemon_uses_v3_record_and_v5_socket(self) -> None:
+        self.assertIn('path += "drmid_control_v5.sock"', SOURCE)
         self.assertIn("migrate_runtime_control_v2", MODULE)
         self.assertIn("drmid_runtime_control_v3.bin", (ROOT / "runtime_control.cpp").read_text(encoding="utf-8"))
 
@@ -152,8 +132,7 @@ class ControlIpcTest(unittest.TestCase):
         for marker in (
             "hal_identity_generation", "hal_monitor_backend",
             "server_request_hits", "correlated_reply_candidates",
-            "write_ok", "hal_tgids",
-            "tee_backend_state", "tee_op9_candidates", "tee_op9_write_ok",
+            "write_ok", "hal_tgids", "hal-outbound-binder-global",
         ):
             self.assertIn(marker, SOURCE)
 

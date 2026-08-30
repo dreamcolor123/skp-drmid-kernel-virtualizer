@@ -50,7 +50,7 @@ class BinderEntryGateTest(unittest.TestCase):
             "a->ldar(w13, ptr(x12))",
             "for (uint32_t index = 0; index < kHalIdentityLimit; ++index)",
             "offsetof(HalIdentitySet, tgids)",
-            "kCounterContextAbi = 19",
+            "kCounterContextAbi = 20",
             "kHalIdentityLimit = 4",
         ):
             self.assertIn(marker, HOOK + CONTEXT)

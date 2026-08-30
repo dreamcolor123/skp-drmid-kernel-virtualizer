@@ -80,7 +80,7 @@ class HookLockSafetyTest(unittest.TestCase):
 
     def test_context_versions_new_lock_semantics_without_layout_growth(self) -> None:
         for marker in (
-            "kCounterContextAbi = 19",
+            "kCounterContextAbi = 20",
             "pending_lock_state",
             "pending_lock_drops",
             "kPendingBucketWays = 8",

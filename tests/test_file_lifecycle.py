@@ -294,12 +294,14 @@ class FileLifecycleTest(unittest.TestCase):
             self.assertTrue(symlink.is_symlink())
             self.assertEqual(protected.read_text(encoding="utf-8"), "keep")
 
-    def test_uninstall_cleanup_knows_current_v3_state(self):
+    def test_uninstall_cleanup_knows_current_runtime_and_ipc_state(self):
         lifecycle = (ROOT / "file_lifecycle.cpp").read_text(encoding="utf-8")
         for name in (
-            "drmid_control_v3.sock",
+            "drmid_control_v5.sock",
             "drmid_runtime_control_v3.bin",
             "drmid_runtime_control_v3.bin.tmp",
+            "drmid_binder_capability_v1.bin",
+            "drmid_binder_capability_v1.bin.tmp",
         ):
             self.assertIn(f'"{name}"', lifecycle)
 

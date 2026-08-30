@@ -16,8 +16,8 @@ SDK_SOURCE = (
     "kernel_module_kit"
 )
 SDK_CACHE = ROOT / ".sdk-cache" / "kernel_module_kit"
-EXPECTED_COMMIT = "843b8ab32905e653d5959683cfca328883e9076c"
-EXPECTED_SHA256 = "5b304a9d7e1c2d5d8aa2e7d2a95710d37b1f261e1a92ffe640737d747ed93f91"
+EXPECTED_COMMIT = "90a28f81b85042b2483a62630455f1d70e334d6f"
+EXPECTED_SHA256 = "9144ddc36c7ebe2bd524bc38d279c82c14d0f162cc195fcbe98f19882eab71d2"
 
 
 def sha256_file(path: Path) -> str:
@@ -47,7 +47,7 @@ def main() -> int:
     digest = sha256_file(source_library)
     if digest != EXPECTED_SHA256:
         raise SystemExit(
-            f"SKRoot SDK 4.6.0 hash mismatch: expected={EXPECTED_SHA256} "
+            f"SKRoot SDK 4.5.4 hash mismatch: expected={EXPECTED_SHA256} "
             f"actual={digest}"
         )
 
@@ -60,7 +60,7 @@ def main() -> int:
     ):
         SDK_CACHE.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(SDK_SOURCE, SDK_CACHE, dirs_exist_ok=True)
-    print(f"SKRoot SDK 4.6.0 ready: {EXPECTED_COMMIT[:12]}")
+    print(f"SKRoot SDK 4.5.4 ready: {EXPECTED_COMMIT[:12]}")
     return 0
 
 

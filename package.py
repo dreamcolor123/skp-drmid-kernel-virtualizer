@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the reproducible SKRoot Pro 1.3.0-rc2 global module archive."""
+"""Build the reproducible SKRoot Pro 1.4.0-rc1 Binder-global archive."""
 
 from __future__ import annotations
 
@@ -15,19 +15,18 @@ SO = ROOT / "libs" / "arm64-v8a" / "libmodule_drmid_kernel_virtualizer.so"
 DAEMON = ROOT / "libs" / "arm64-v8a" / "drmid_probe_runner"
 WEBROOT = ROOT / "webroot"
 DIST = ROOT / "dist"
-VERSION = "1.3.0-rc2"
+VERSION = "1.4.0-rc1"
 DISPLAY_NAME = "虚拟化DRM ID"
 AUTHOR = "斓梦语"
 ZIP = DIST / f"module_drmid_kernel_virtualizer-{VERSION}-arm64-run-once.zip"
-SDK_VERSION = "4.6.0"
-SDK_UPSTREAM_COMMIT = "843b8ab32905e653d5959683cfca328883e9076c"
+SDK_VERSION = "4.5.4"
+SDK_UPSTREAM_COMMIT = "90a28f81b85042b2483a62630455f1d70e334d6f"
 SDK_UPSTREAM = ROOT / "third_party" / "SKRoot-linuxKernelRoot"
 SDK_STATIC = (
-    ROOT / "third_party" / "SKRoot-linuxKernelRoot" /
-    "Pro(众测开放中)" / "src" / "testModule" /
+    SDK_UPSTREAM / "Pro(众测开放中)" / "src" / "testModule" /
     "kernel_module_kit" / "lib" / "libkernel_module_kit_static.a"
 )
-EXPECTED_SDK_SHA256 = "5b304a9d7e1c2d5d8aa2e7d2a95710d37b1f261e1a92ffe640737d747ed93f91"
+EXPECTED_SDK_SHA256 = "9144ddc36c7ebe2bd524bc38d279c82c14d0f162cc195fcbe98f19882eab71d2"
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 
 
@@ -60,7 +59,9 @@ def verify_sdk_commit() -> None:
     try:
         actual = subprocess.run(
             ["git", "-C", str(SDK_UPSTREAM), "rev-parse", "HEAD"],
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         raise SystemExit(f"cannot inspect pinned SKRoot SDK submodule: {exc}")
@@ -102,6 +103,10 @@ def verify_release_inputs() -> None:
         "target_config.cpp",
         "target_config.h",
         "build_label_helper.py",
+        "tee_hook_builder.cpp",
+        "tee_hook_builder.h",
+        "tee_firmware_identity.cpp",
+        "tee_firmware_identity.h",
     ):
         if (ROOT / retired).exists():
             raise SystemExit(f"retired multi-application source remains: {retired}")
@@ -119,15 +124,13 @@ def verify_release_inputs() -> None:
     )
 
     hook = (ROOT / "binder_hook_builder.cpp").read_text(encoding="utf-8")
-    tee_hook = (ROOT / "tee_hook_builder.cpp").read_text(encoding="utf-8")
-    tee_firmware = (ROOT / "tee_firmware_identity.cpp").read_text(encoding="utf-8")
     context = (ROOT / "kernel_context.h").read_text(encoding="utf-8")
     hook_header = (ROOT / "binder_hook_builder.h").read_text(encoding="utf-8")
     require_markers(
         "HAL Binder backend",
         hook + context + hook_header,
         (
-            "kCounterContextAbi = 19",
+            "kCounterContextAbi = 20",
             "kHalIdentityLimit = 4",
             "kWidevineDeviceUniqueIdBytes = 32",
             "emit_hal_identity_gate",
@@ -144,37 +147,17 @@ def verify_release_inputs() -> None:
             "a->stlr(w10, ptr(x9))",
         ),
     )
-    require_markers(
-        "caller-global Widevine TEE backend",
-        tee_hook + tee_firmware + context + module_source,
-        (
-            '"si_object_do_invoke"',
-            '"free_si_object"',
-            "kTeeControllerObjectLimit = 16",
-            "kTeeWidevineObjectLimit = 32",
-            "kTeeFallbackStateLimit = 16",
-            "emit_fallback_consume_ready",
-            "emit_table_contains",
-            "a->casal",
-            "copy_from_user",
-            "copy_to_user",
-            "O_NOFOLLOW",
-            '"/vendor/firmware_mnt/image/widevine.mbn"',
-            "hal-binder+widevine-smcinvoke-global",
-        ),
-    )
     reject_markers(
-        "TEE caller filters",
-        tee_hook,
+        "retired TEE backend",
+        hook + context + hook_header + module_source,
         (
-            "target_euids",
-            "cred_euid",
-            "sender_euid",
-            "get_task_struct_tgid_offset",
-            "get_task_struct_cred_offset",
-            "emit_hal_identity_gate",
-            "kmalloc",
-            "kzalloc",
+            "si_object_do_invoke",
+            "free_si_object",
+            "TeeFirmwareIdentity",
+            "tee_backend_state",
+            "tee_op9_candidates",
+            "DRMID_WIDEVINE_FIRMWARE_PATH",
+            "hal-binder+widevine-smcinvoke-global",
         ),
     )
     reject_markers(
@@ -195,7 +178,7 @@ def verify_release_inputs() -> None:
             "#if 0",
         ),
     )
-    executable_hook = re.sub(r"/\*.*?\*/", "", hook + tee_hook, flags=re.DOTALL)
+    executable_hook = re.sub(r"/\*.*?\*/", "", hook, flags=re.DOTALL)
     executable_hook = re.sub(r"//.*", "", executable_hook)
     if re.search(r"\b[wx]18\b", executable_hook):
         raise SystemExit("ARM64 x18 shadow-call-stack register used by hook emitter")
@@ -258,7 +241,11 @@ def verify_release_inputs() -> None:
             "DRM ID虚拟化",
             "当前状态：已开启",
             "当前状态：已关闭",
-            "Binder + TEE 直连（全局）",
+            "HAL 出站 Binder（全局）",
+            "binder_driver_backend",
+            "binder_resolution_source",
+            "binder_capabilities",
+            "binder_entry_fingerprint",
             f">{VERSION} · {AUTHOR}<",
         ),
     )
@@ -282,7 +269,8 @@ def verify_release_inputs() -> None:
         (
             "cleanup_legacy_target_state_after_global_migration",
             '"drmid_runtime_control_v3.bin"',
-            '"drmid_control_v4.sock"',
+            '"drmid_control_v5.sock"',
+            '"drmid_binder_capability_v1.bin"',
             '"drmid_label_helper.jar"',
             "AT_SYMLINK_NOFOLLOW",
             "S_ISREG",
@@ -308,11 +296,32 @@ def verify_release_inputs() -> None:
     resolver = (ROOT / "binder_ioctl_resolver.cpp").read_text(encoding="utf-8")
     resolver_header = (ROOT / "binder_ioctl_resolver.h").read_text(encoding="utf-8")
     require_markers(
-        "kernel family",
+        "Binder capability resolver",
         resolver + resolver_header + module_source,
         (
+            "BinderBackend::kClassic",
+            "BinderBackend::kRust",
+            "kRequiredBinderCapabilities",
+            "is_supported_linux_6_1_or_newer",
+            "classify_semantic_entry",
+            "classify_single_instruction_hook_site",
+            "classify_hookable_entry",
+            "branch_index == 0",
+            "!address_in_core_text(target)",
+            "kBinderEntryProbeBytes = 256",
+            "binder_fops",
+            "binder_ioctl",
+            "kCapabilitySymbolCrossValidated",
+            "kCapabilityHookRelocatablePrefix",
+        ),
+    )
+    reject_markers(
+        "retired kernel-version profile gate",
+        resolver + module_source,
+        (
             "kClassicBinder66",
-            "classic_binder-6.6",
+            "kClassicBinder612",
+            "kRustBinder612",
             'kernel_version.rfind("6.6.", 0)',
             'kernel_version.rfind("6.12.", 0)',
             "is_supported_ioctl_profile",
@@ -339,8 +348,8 @@ def verify_built_payloads() -> None:
             VERSION.encode("ascii"),
             DISPLAY_NAME.encode("utf-8"),
             AUTHOR.encode("utf-8"),
-            b"hal-binder+widevine-smcinvoke-global",
-            b"drmid_control_v4.sock",
+            b"hal-outbound-binder-global",
+            b"drmid_control_v5.sock",
         ):
             if expected not in data:
                 raise SystemExit(f"binary marker missing from {payload}: {expected!r}")
@@ -348,6 +357,9 @@ def verify_built_payloads() -> None:
             b"env-install",
             b"DRMID_ROOT_CMD",
             b"DRMID_EXPORT_EXPECTED",
+            b"si_object_do_invoke",
+            b"free_si_object",
+            b"widevine.mbn",
         ):
             if forbidden in data:
                 raise SystemExit(f"binary marker rejected from {payload}: {forbidden!r}")

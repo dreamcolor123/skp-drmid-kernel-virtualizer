@@ -20,9 +20,7 @@ LOCAL_SRC_FILES := \
     ../file_lifecycle.cpp \
     ../control_ipc.cpp \
     ../binder_ioctl_resolver.cpp \
-    ../binder_hook_builder.cpp \
-    ../tee_firmware_identity.cpp \
-    ../tee_hook_builder.cpp
+    ../binder_hook_builder.cpp
 
 LOCAL_C_INCLUDES += $(KERNEL_MODULE_KIT)/include
 LOCAL_STATIC_LIBRARIES := kernel_module_kit_static_prebuilt
@@ -45,9 +43,7 @@ LOCAL_SRC_FILES := \
     ../file_lifecycle.cpp \
     ../control_ipc.cpp \
     ../binder_ioctl_resolver.cpp \
-    ../binder_hook_builder.cpp \
-    ../tee_firmware_identity.cpp \
-    ../tee_hook_builder.cpp
+    ../binder_hook_builder.cpp
 
 LOCAL_C_INCLUDES += $(KERNEL_MODULE_KIT)/include
 LOCAL_STATIC_LIBRARIES := kernel_module_kit_static_prebuilt

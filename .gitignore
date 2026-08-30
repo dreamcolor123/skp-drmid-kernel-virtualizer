@@ -25,3 +25,6 @@ __pycache__/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local installation helpers
+/tools/local_install*

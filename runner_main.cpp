@@ -52,7 +52,7 @@ int main() {
         }
         const char* path = std::getenv("DRMID_CONTROL_SOCKET_PATH");
         const std::string fallback =
-            "/data/local/tmp/drmid_probe_state/drmid_control_v4.sock";
+            "/data/local/tmp/drmid_probe_state/drmid_control_v5.sock";
         drmid::ControlIpcResponse response{};
         const KModErr err = drmid::send_control_ipc_request(
             path != nullptr && path[0] != '\0' ? path : fallback.c_str(),

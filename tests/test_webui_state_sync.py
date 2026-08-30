@@ -10,6 +10,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 HTML = (ROOT / "webroot" / "index.html").read_text(encoding="utf-8")
+WEB_CPP = (ROOT / "web_ui.cpp").read_text(encoding="utf-8")
+RESOLVER = (ROOT / "binder_ioctl_resolver.cpp").read_text(encoding="utf-8")
 
 
 class WebUiStateSyncTest(unittest.TestCase):
@@ -17,7 +19,7 @@ class WebUiStateSyncTest(unittest.TestCase):
         for retired in ("/api/apps", "选择应用", "package_status", "target_euid", "sharedUid"):
             self.assertNotIn(retired, HTML)
         self.assertIn("一个 ID，全局生效", HTML)
-        self.assertIn("所有已识别 Widevine 通路", HTML)
+        self.assertIn("Java MediaDrm 与 NDK AMediaDrm", HTML)
 
     def test_virtualization_mode_is_a_single_off_on_switch(self) -> None:
         self.assertIn('id="modeToggle" type="checkbox" role="switch"', HTML)
@@ -25,7 +27,7 @@ class WebUiStateSyncTest(unittest.TestCase):
         self.assertIn('aria-label="DRM ID虚拟化开关"', HTML)
         self.assertIn("当前状态：已关闭", HTML)
         self.assertIn("当前状态：已开启", HTML)
-        self.assertIn("全局替换 Binder 与 TEE 已识别的 32 字节 deviceUniqueId。", HTML)
+        self.assertIn("全局替换 Widevine HAL Binder 回复中的 32 字节 deviceUniqueId。", HTML)
         self.assertIn("$('modeChoice').textContent='DRM ID虚拟化'", HTML)
         self.assertNotIn("$('modeChoice').textContent=on?", HTML)
         self.assertIn("checked?'write':'dry'", HTML)
@@ -75,9 +77,20 @@ class WebUiStateSyncTest(unittest.TestCase):
         for marker in (
             "hal_identity_generation", "hal_monitor_backend",
             "hal_monitor_wakeups", "server_request_hits", "write_ok",
-            "pidfd 事件驱动", "tee_backend_state", "tee_op9_candidates",
+            "pidfd 事件驱动", "HAL 出站 Binder（全局）",
         ):
             self.assertIn(marker, HTML)
+        for retired in ("tee_backend_state", "tee_op9_candidates", "TEE 直连", "TEE 对象"):
+            self.assertNotIn(retired, HTML)
+
+    def test_binder_capability_diagnostics_are_visible_without_ipc_change(self) -> None:
+        for marker in (
+            "kernel_release", "binder_driver_backend",
+            "binder_resolution_source", "binder_capabilities",
+            "binder_entry_fingerprint", "drmid_binder_capability_v1.bin",
+            "内核版本", "Binder 驱动", "解析来源", "能力标志", "入口指纹",
+        ):
+            self.assertIn(marker, HTML + WEB_CPP + RESOLVER)
 
     def test_stop_confirmation_stays_in_foreground_page(self) -> None:
         self.assertNotIn("confirm(", HTML)
@@ -125,7 +138,7 @@ class WebUiStateSyncTest(unittest.TestCase):
         self.assertIn("env(safe-area-inset-bottom)", HTML)
 
     def test_release_identity_is_visible(self) -> None:
-        self.assertIn("1.3.0-rc2 · 斓梦语", HTML)
+        self.assertIn("1.4.0-rc1 · 斓梦语", HTML)
 
     def test_inline_javascript_has_valid_syntax(self) -> None:
         node = shutil.which("node")
